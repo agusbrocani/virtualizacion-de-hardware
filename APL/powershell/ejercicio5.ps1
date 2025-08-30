@@ -13,3 +13,66 @@
 #        VARALDO, RODRIGO           42772765            #
 #                                                       #
 #-------------------------------------------------------#
+
+
+function Get-FieldValue {
+        param (
+        [Parameter(Position = 0)]
+        $field
+    )
+    return $field ?? '-'
+}
+
+function Show-CountryInfo {
+    param (
+        [Parameter(Mandatory = $true)]
+        $country
+    )
+    
+    Write-Host "País: $(Get-FieldValue $country.name.common)"
+    Write-Host "Capital: $(Get-FieldValue $country.capital[0])"
+    Write-Host "Región: $(Get-FieldValue $country.region)"
+    
+    $currencyCode = $country.currencies.PSObject.Properties.Name | Select-Object -First 1
+    $currencyName = $country.currencies.$currencyCode.name
+    
+    Write-Host "Población: $(Get-FieldValue $country.population)"
+    Write-Host "Moneda: $(Get-FieldValue $currencyName) ($(Get-FieldValue $currencyCode))"
+}
+
+# param(
+#     [Parameter(Mandatory = $true)]
+#     [string[]]$nombre,
+
+#     [Parameter(Mandatory = $false)]
+#     [int]$ttl = 0
+# )
+
+# 1. Definir la URL del endpoint
+$countries = @("Macau", "spain", "argentina", "united states");
+
+foreach ($countryName in $countries) {
+    Write-Host "Buscando pais '$countryName'`n" -f Cyan
+    
+    # if (NO ESTÁ EN CACHÉ) {
+        $uri = "https://restcountries.com/v3.1/name/${countryName}?fields=name,capital,region,population,currencies"
+
+    # } else {
+
+    # }
+    
+    try {
+        # 2. Realizar la solicitud HTTP GET
+        $response = Invoke-WebRequest -Uri $uri -Method Get -UseBasicParsing
+        # 3. Obtener el contenido como cadena
+        $content = $response.Content | ConvertFrom-Json
+        $countryInfo = $content[0]   # la API devuelve un array
+    }
+    catch {
+        Write-Host "La solicitud falló: $_" -f Red
+        return
+    }
+    
+
+    Show-CountryInfo $countryInfo
+}
