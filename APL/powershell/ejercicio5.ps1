@@ -13,7 +13,13 @@
 #        VARALDO, RODRIGO           42772765            #
 #                                                       #
 #-------------------------------------------------------#
+param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$nombre,
 
+    [Parameter(Mandatory = $false)]
+    [int]$ttl = 0
+)
 
 function Get-FieldValue {
         param (
@@ -40,39 +46,31 @@ function Show-CountryInfo {
     Write-Host "Moneda: $(Get-FieldValue $currencyName) ($(Get-FieldValue $currencyCode))"
 }
 
-# param(
-#     [Parameter(Mandatory = $true)]
-#     [string[]]$nombre,
+try {
+    if ($ttl -lt 0) {
+        throw "No se puede enviar como TTL un tiempo negativo."
+    }
 
-#     [Parameter(Mandatory = $false)]
-#     [int]$ttl = 0
-# )
-
-# 1. Definir la URL del endpoint
-$countries = @("Macau", "spain", "argentina", "united states");
-
-foreach ($countryName in $countries) {
-    Write-Host "Buscando pais '$countryName'`n" -f Cyan
+    $countries = $nombre
+    foreach ($countryName in $countries) {
+        Write-Host "Buscando pais '$countryName'`n" -f Cyan
+        
+        # if (NO ESTÁ EN CACHÉ) {
+            # 1. Definir la URL del endpoint
+            $uri = "https://restcountries.com/v3.1/name/${countryName}?fields=name,capital,region,population,currencies"
     
-    # if (NO ESTÁ EN CACHÉ) {
-        $uri = "https://restcountries.com/v3.1/name/${countryName}?fields=name,capital,region,population,currencies"
-
-    # } else {
-
-    # }
+        # } else {
     
-    try {
+        # }
+        
         # 2. Realizar la solicitud HTTP GET
         $response = Invoke-WebRequest -Uri $uri -Method Get -UseBasicParsing
         # 3. Obtener el contenido como cadena
         $content = $response.Content | ConvertFrom-Json
         $countryInfo = $content[0]   # la API devuelve un array
-    }
-    catch {
-        Write-Host "La solicitud falló: $_" -f Red
-        return
-    }
     
-
-    Show-CountryInfo $countryInfo
+        Show-CountryInfo $countryInfo
+    }
+} catch {
+    Write-Host "Hubo un error: $_" -f Red
 }
