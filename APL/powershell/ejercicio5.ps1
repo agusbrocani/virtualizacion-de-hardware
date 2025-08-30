@@ -18,7 +18,7 @@ param(
     [string[]]$nombre,
 
     [Parameter(Mandatory = $false)]
-    [int]$ttl = 0
+    [int]$ttl = 3600
 )
 
 function Get-FieldValue {
