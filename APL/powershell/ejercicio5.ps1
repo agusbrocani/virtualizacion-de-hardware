@@ -18,11 +18,12 @@ param(
     [string[]]$nombre,
 
     [Parameter(Mandatory = $false)]
+    [ValidateRange(0, 86400)]
     [int]$ttl = 3600
 )
 
 function Get-FieldValue {
-        param (
+    param (
         [Parameter(Position = 0)]
         $field
     )
@@ -56,8 +57,8 @@ try {
         Write-Host "Buscando pais '$countryName'`n" -f Cyan
         
         # if (NO ESTÁ EN CACHÉ) {
-            # 1. Definir la URL del endpoint
-            $uri = "https://restcountries.com/v3.1/name/${countryName}?fields=name,capital,region,population,currencies"
+        # 1. Definir la URL del endpoint
+        $uri = "https://restcountries.com/v3.1/name/${countryName}?fields=name,capital,region,population,currencies"
     
         # } else {
     
@@ -71,6 +72,7 @@ try {
     
         Show-CountryInfo $countryInfo
     }
-} catch {
+}
+catch {
     Write-Host "Hubo un error: $_" -f Red
 }
