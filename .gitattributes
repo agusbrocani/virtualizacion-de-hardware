@@ -1,0 +1,9 @@
+# Forzar LF en scripts de Bash (evita problemas en Linux)
+*.sh text eol=lf
+
+# Forzar CRLF en scripts de PowerShell (se usan en Windows)
+*.ps1 text eol=crlf
+
+# Normalizar el resto de archivos de texto
+*.txt text eol=lf
+*.md  text eol=lf
