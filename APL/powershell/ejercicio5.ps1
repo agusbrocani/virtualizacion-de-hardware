@@ -63,16 +63,16 @@ function Show-CountryInfo {
 
 function Add-Expiry {
     param(
-        [Parameter(Mandatory = $true)] $obj,
+        [Parameter(Mandatory = $true)] $apiResponseObject,
         [Parameter(Mandatory = $true)] [int] $ttlSeconds
     )
     $now = Get-Date
     $expirationDate = $now.AddSeconds($ttlSeconds)
     # guardo ISO para parseo y una cadena legible
-    $obj | Add-Member -NotePropertyName 'cachedAt'     -NotePropertyValue $now.ToString('o') -Force
-    $obj | Add-Member -NotePropertyName 'expiresAt'    -NotePropertyValue $expirationDate.ToString('o') -Force
-    $obj | Add-Member -NotePropertyName 'ttlSeconds'   -NotePropertyValue $ttlSeconds -Force
-    return $obj
+    $apiResponseObject | Add-Member -NotePropertyName 'cachedAt'     -NotePropertyValue $now.ToString('o') -Force
+    $apiResponseObject | Add-Member -NotePropertyName 'expiresAt'    -NotePropertyValue $expirationDate.ToString('o') -Force
+    $apiResponseObject | Add-Member -NotePropertyName 'ttlSeconds'   -NotePropertyValue $ttlSeconds -Force
+    return $apiResponseObject
 }
 
 function Get-CountriesSet {
@@ -90,6 +90,16 @@ function Get-CountriesSet {
     }
 
     return $countriesSet
+}
+
+function Format-CountryName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+    return $culture.TextInfo.ToTitleCase($Name)
 }
 
 $fileCacheName = "restcountries-cache.json"
@@ -113,9 +123,7 @@ try {
     Write-Host ("─" * 50) -ForegroundColor DarkGray
     foreach ($countryName in $countriesSet) {
         # Formateo de pais para visualización en consola (ya que está en minúsculas)
-        #! Mover a una función con semántica
-        $culture = [System.Globalization.CultureInfo]::InvariantCulture
-        $capitalizedName = $culture.TextInfo.ToTitleCase($countryName)
+        $capitalizedName = Format-CountryName -Name $countryName
         Write-Host "Buscando información de '$capitalizedName'" -ForegroundColor Cyan
 
         # Lógica para ver si el pais está en caché o debo pegarle a la API
@@ -132,7 +140,7 @@ try {
         # Respuesta del sistema según el caso
         $countryInfo = $null
         if (-not($APImustBeCalled)) {
-            #! ESTÁ EN CACHÉ y NO ESTÁ EXPIRADO
+            # Está en caché y no está expirado
             Write-Host "'$capitalizedName' está en la caché." -ForegroundColor Magenta
             $countryInfo = $cacheContent | Select-Object -ExpandProperty $countryName
         }
@@ -145,7 +153,7 @@ try {
             $countryInfo = $content[0]
 
             # Se agregan metadatos expiración según TTL
-            $countryInfo = Add-Expiry -obj $countryInfo -ttlSeconds $ttl
+            $countryInfo = Add-Expiry -apiResponseObject $countryInfo -ttlSeconds $ttl
             
             # Agrega o reemplaza la información del pais en el archivo de caché
             $cacheContent | Add-Member -NotePropertyName $countryName -NotePropertyValue $countryInfo -Force
@@ -168,7 +176,7 @@ finally {
             Write-Host "Archivo de caché '$fileCacheName' eliminado." -ForegroundColor Magenta
         }
         else {
-            Write-Host "No se encontró archivo de caché para eliminar." -ForegroundColor Magenta
+            Write-Host "Hubo un error: no se encontró archivo de caché para eliminar." -ForegroundColor Red
         }
     }
 }
