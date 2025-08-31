@@ -232,7 +232,7 @@ try {
     }
 }
 catch {
-    # Write-Host "Hubo un error: $_" -ForegroundColor Red
+    Write-Host "Hubo un error: $_" -ForegroundColor Red
 }
 finally {
     if ($dropCacheFile.IsPresent) {
