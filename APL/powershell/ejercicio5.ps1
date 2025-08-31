@@ -29,20 +29,35 @@ function Get-FieldValue {
 
 function Show-CountryInfo {
     param ([Parameter(Mandatory = $true)] $country)
+
     Write-Host "Pais: $(Get-FieldValue $country.name.common)"
-    Write-Host "Capital: $(Get-FieldValue $country.capital[0])" #! Agregar la misma logica que para moneda porque puede haber más de una
+
+    if ($country.capital -and $country.capital.Count -gt 0) {
+        Write-Host "Capital: $($country.capital -join ', ')"
+    }
+    else {
+        Write-Host "Capital: -"
+    }
+
     Write-Host "Region: $(Get-FieldValue $country.region)"
+
     $monedas = foreach ($currency in $country.currencies.PSObject.Properties) {
         $currencyCode = $currency.Name
         $currencyName = $currency.Value.name
         "$currencyName ($currencyCode)"
     }
+
     $label = if ($monedas.Count -gt 1) { "Monedas" } else { "Moneda" }
     Write-Host "${label}: $($monedas -join ', ')"
+
     Write-Host "Poblacion: $(Get-FieldValue $country.population)"
+
     if ($country.PSObject.Properties.Name -contains 'expiresAt') {
-        Write-Host "Cacheado:   $($country.cachedAt)"
-        Write-Host "Expira:     $($country.expiresAt)  (ttl: $($country.ttlSeconds)s)"
+        $cacheDate = [datetime]$country.cachedAt
+        $expiryDate = [datetime]$country.expiresAt
+        $format = 'dd/MM/yyyy HH:mm:ss'
+        Write-Host "Cacheado:   $($cacheDate.ToString($format))"
+        Write-Host "Expira:     $($expiryDate.ToString($format))  (ttl: $($country.ttlSeconds)s)"
     }
 }
 
@@ -90,7 +105,7 @@ try {
     }
 
     # Carga en Hashtable del contenido del archivo de caché para realizar búsquedas
-    $cacheContent = Get-Content $cachePath -Raw | ConvertFrom-Json -AsHashtable
+    $cacheContent = Get-Content $cachePath -Raw | ConvertFrom-Json
 
     # Set para almacenar los nombres de los paises recibidos por parámetro normalizados y sin repetidos
     $countriesSet = Get-CountriesSet -countriesNames $nombre
@@ -104,19 +119,12 @@ try {
         Write-Host "Buscando información de '$capitalizedName'`n" -ForegroundColor Cyan
 
         # Lógica para ver si el pais está en caché o debo pegarle a la API
-        $APImustBeCalled = $false
-        $isInCache = $false
-        if ($cacheContent) {
-            $isInCache = $cacheContent.ContainsKey($countryName);
-        }
-        
-        if (-not($isInCache)) {
-            $APImustBeCalled = $true
-        }
-        else {
-            $expiration = [datetime]$cacheContent[$countryName].expiresAt
-            $now = Get-Date
-            if ($now -ge $expiration) {
+        $isInCache = $cacheContent.PSObject.Properties.Name -contains $countryName
+        $APImustBeCalled = -not $isInCache
+
+        if ($isInCache) {
+            $expiration = [datetime]($cacheContent | Select-Object -ExpandProperty $countryName).expiresAt
+            if ((Get-Date) -ge $expiration) {
                 $APImustBeCalled = $true
             }
         }
@@ -126,7 +134,7 @@ try {
         if (-not($APImustBeCalled)) {
             #! ESTÁ EN CACHÉ y NO ESTÁ EXPIRADO
             Write-Host "'$capitalizedName' está en la caché." -ForegroundColor DarkGray
-            $countryInfo = $cacheContent[$countryName]
+            $countryInfo = $cacheContent | Select-Object -ExpandProperty $countryName
         }
         else {
             Write-Host "'$capitalizedName' fue buscado en la API." -ForegroundColor DarkGray
@@ -138,15 +146,17 @@ try {
 
             # Se agregan metadatos expiración según TTL
             $countryInfo = Add-Expiry -obj $countryInfo -ttlSeconds $ttl
-
-            # Guardar/actualizar en cache y persistir en archivo
+            
+            # Agrega o reemplaza la información del pais en el archivo de caché
+            $cacheContent
+            | Add-Member -NotePropertyName $countryName -NotePropertyValue $countryInfo -Force
+            | ConvertTo-Json -Depth 10
+            | Set-Content -Path $cachePath -Encoding utf8
+            
             $action = if ($isInCache) { 'actualizado' } else { 'agregado' }
-            if ($cacheContent) {
-                $cacheContent[$countryName] = $countryInfo
-            }
-            $cacheContent | ConvertTo-Json -Depth 10 | Set-Content -Path $cachePath -Encoding utf8
             Write-Host "'$capitalizedName' fue $action en caché." -ForegroundColor DarkGray
         }
+
         Show-CountryInfo $countryInfo
     }
 }
