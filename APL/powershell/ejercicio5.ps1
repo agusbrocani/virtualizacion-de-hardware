@@ -100,7 +100,7 @@ try {
     # Si no existe el archivo de caché, lo crea
     if (-not (Test-Path $cachePath)) {
         '{}' | Out-File -FilePath $cachePath -Encoding utf8
-        Write-Host "Archivo '$fileCacheName' creado." -f Magenta
+        Write-Host "`nArchivo '$fileCacheName' creado." -f Magenta
     }
 
     # Carga en Hashtable del contenido del archivo de caché para realizar búsquedas
@@ -148,10 +148,8 @@ try {
             $countryInfo = Add-Expiry -obj $countryInfo -ttlSeconds $ttl
             
             # Agrega o reemplaza la información del pais en el archivo de caché
-            $cacheContent
-            | Add-Member -NotePropertyName $countryName -NotePropertyValue $countryInfo -Force
-            | ConvertTo-Json -Depth 10
-            | Set-Content -Path $cachePath -Encoding utf8
+            $cacheContent | Add-Member -NotePropertyName $countryName -NotePropertyValue $countryInfo -Force
+            $cacheContent | ConvertTo-Json -Depth 10 | Set-Content -Path $cachePath -Encoding utf8
             
             $action = if ($isInCache) { 'actualizado' } else { 'agregado' }
             Write-Host "'$capitalizedName' fue $action en caché." -ForegroundColor Magenta
@@ -167,7 +165,7 @@ finally {
     if ($dropCacheFile) {
         if (Test-Path $cachePath) {
             Remove-Item -Path $cachePath -Force
-            Write-Host "Archivo de caché eliminado: $cachePath" -ForegroundColor Magenta
+            Write-Host "Archivo de caché '$fileCacheName' eliminado." -ForegroundColor Magenta
         }
         else {
             Write-Host "No se encontró archivo de caché para eliminar." -ForegroundColor Magenta
