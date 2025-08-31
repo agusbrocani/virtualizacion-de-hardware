@@ -19,7 +19,10 @@ param(
 
     [Parameter(Mandatory = $false)]
     [ValidateRange(0, 86400)]
-    [int]$ttl = 3600
+    [int]$ttl = 3600,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$dropCacheFile = $false
 )
 
 function Get-FieldValue {
@@ -30,7 +33,7 @@ function Get-FieldValue {
 function Show-CountryInfo {
     param ([Parameter(Mandatory = $true)] $country)
 
-    Write-Host "Pais: $(Get-FieldValue $country.name.common)"
+    Write-Host "`nPais: $(Get-FieldValue $country.name.common)"
 
     $label = if ($country.capital.Count -gt 1) { "Capitales" } else { "Capital" }
     Write-Host "${label}: $($country.capital -join ', ')"
@@ -55,6 +58,7 @@ function Show-CountryInfo {
         Write-Host "Cacheado:   $($cacheDate.ToString($format))"
         Write-Host "Expira:     $($expiryDate.ToString($format))  (ttl: $($country.ttlSeconds)s)"
     }
+    Write-Host ("─" * 50) -ForegroundColor DarkGray
 }
 
 function Add-Expiry {
@@ -88,16 +92,15 @@ function Get-CountriesSet {
     return $countriesSet
 }
 
+$fileCacheName = "restcountries-cache.json"
+$cachePath = Join-Path -Path $env:TEMP -ChildPath $fileCacheName
 try {
     if ($ttl -lt 0) { throw "No se puede enviar como TTL un tiempo negativo." }
 
-    $fileCacheName = "restcountries-cache.json"
-    $cachePath = Join-Path -Path $env:TEMP -ChildPath $fileCacheName
-    
     # Si no existe el archivo de caché, lo crea
     if (-not (Test-Path $cachePath)) {
         '{}' | Out-File -FilePath $cachePath -Encoding utf8
-        Write-Host "Archivo '$fileCacheName' creado." -f Cyan
+        Write-Host "Archivo '$fileCacheName' creado." -f Magenta
     }
 
     # Carga en Hashtable del contenido del archivo de caché para realizar búsquedas
@@ -105,14 +108,15 @@ try {
 
     # Set para almacenar los nombres de los paises recibidos por parámetro normalizados y sin repetidos
     $countriesSet = Get-CountriesSet -countriesNames $nombre
-
+    
     # Para cada pais ingresado, se realiza procesamiento para dar servicio con caché o API según el caso
+    Write-Host ("─" * 50) -ForegroundColor DarkGray
     foreach ($countryName in $countriesSet) {
         # Formateo de pais para visualización en consola (ya que está en minúsculas)
         #! Mover a una función con semántica
         $culture = [System.Globalization.CultureInfo]::InvariantCulture
         $capitalizedName = $culture.TextInfo.ToTitleCase($countryName)
-        Write-Host "Buscando información de '$capitalizedName'`n" -ForegroundColor Cyan
+        Write-Host "Buscando información de '$capitalizedName'" -ForegroundColor Cyan
 
         # Lógica para ver si el pais está en caché o debo pegarle a la API
         $isInCache = $cacheContent.PSObject.Properties.Name -contains $countryName
@@ -129,11 +133,11 @@ try {
         $countryInfo = $null
         if (-not($APImustBeCalled)) {
             #! ESTÁ EN CACHÉ y NO ESTÁ EXPIRADO
-            Write-Host "'$capitalizedName' está en la caché." -ForegroundColor DarkGray
+            Write-Host "'$capitalizedName' está en la caché." -ForegroundColor Magenta
             $countryInfo = $cacheContent | Select-Object -ExpandProperty $countryName
         }
         else {
-            Write-Host "'$capitalizedName' fue buscado en la API." -ForegroundColor DarkGray
+            Write-Host "'$capitalizedName' fue buscado en la API." -ForegroundColor Magenta
             # Request a la API
             $uri = "https://restcountries.com/v3.1/name/${countryName}?fields=name,capital,region,population,currencies"
             $response = Invoke-WebRequest -Uri $uri -Method Get -UseBasicParsing
@@ -150,7 +154,7 @@ try {
             | Set-Content -Path $cachePath -Encoding utf8
             
             $action = if ($isInCache) { 'actualizado' } else { 'agregado' }
-            Write-Host "'$capitalizedName' fue $action en caché." -ForegroundColor DarkGray
+            Write-Host "'$capitalizedName' fue $action en caché." -ForegroundColor Magenta
         }
 
         Show-CountryInfo $countryInfo
@@ -160,5 +164,13 @@ catch {
     Write-Host "Hubo un error: $_" -ForegroundColor Red
 }
 finally {
-    #! BORRAR ARCHIVO caché de temp
+    if ($dropCacheFile) {
+        if (Test-Path $cachePath) {
+            Remove-Item -Path $cachePath -Force
+            Write-Host "Archivo de caché eliminado: $cachePath" -ForegroundColor Magenta
+        }
+        else {
+            Write-Host "No se encontró archivo de caché para eliminar." -ForegroundColor Magenta
+        }
+    }
 }
