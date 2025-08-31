@@ -32,12 +32,8 @@ function Show-CountryInfo {
 
     Write-Host "Pais: $(Get-FieldValue $country.name.common)"
 
-    if ($country.capital -and $country.capital.Count -gt 0) {
-        Write-Host "Capital: $($country.capital -join ', ')"
-    }
-    else {
-        Write-Host "Capital: -"
-    }
+    $label = if ($country.capital.Count -gt 1) { "Capitales" } else { "Capital" }
+    Write-Host "${label}: $($country.capital -join ', ')"
 
     Write-Host "Region: $(Get-FieldValue $country.region)"
 
@@ -162,4 +158,7 @@ try {
 }
 catch {
     Write-Host "Hubo un error: $_" -ForegroundColor Red
+}
+finally {
+    #! BORRAR ARCHIVO caché de temp
 }
