@@ -106,6 +106,7 @@ function Show-CountryInfo {
         Write-Host "Cacheado:   $($cacheDate.ToString($format))"
         Write-Host "Expira:     $($expiryDate.ToString($format))  (ttl: $($country.ttlSeconds)s)"
     }
+
     Write-Host ("─" * 50) -ForegroundColor DarkGray
 }
 
@@ -196,26 +197,42 @@ try {
             Write-Host "'$capitalizedName' fue buscado en la API." -ForegroundColor Magenta
             # Request a la API
             $uri = "https://restcountries.com/v3.1/name/${countryName}?fields=name,capital,region,population,currencies"
-            $response = Invoke-WebRequest -Uri $uri -Method Get -UseBasicParsing
-            $content = $response.Content | ConvertFrom-Json
-            $countryInfo = $content[0]
+            try {
+                $response = Invoke-WebRequest -Uri $uri -Method Get -UseBasicParsing
+                $content = $response.Content | ConvertFrom-Json
+                $countryInfo = $content[0]
+    
+                # Se agregan metadatos expiración según TTL
+                $countryInfo = Add-Expiry -apiResponseObject $countryInfo -ttlSeconds $ttl
+                
+                # Agrega o reemplaza la información del pais en el archivo de caché
+                $cacheContent | Add-Member -NotePropertyName $countryName -NotePropertyValue $countryInfo -Force
+                $cacheContent | ConvertTo-Json -Depth 10 | Set-Content -Path $cachePath -Encoding utf8
+                
+                $action = if ($isInCache) { 'actualizado' } else { 'agregado' }
+                Write-Host "'$capitalizedName' fue $action en caché." -ForegroundColor Magenta
+            }
+            catch {
+                $e = $_ | ConvertFrom-Json
+                $statusCode = $e.status
+                $statusMessage = $e.message
 
-            # Se agregan metadatos expiración según TTL
-            $countryInfo = Add-Expiry -apiResponseObject $countryInfo -ttlSeconds $ttl
-            
-            # Agrega o reemplaza la información del pais en el archivo de caché
-            $cacheContent | Add-Member -NotePropertyName $countryName -NotePropertyValue $countryInfo -Force
-            $cacheContent | ConvertTo-Json -Depth 10 | Set-Content -Path $cachePath -Encoding utf8
-            
-            $action = if ($isInCache) { 'actualizado' } else { 'agregado' }
-            Write-Host "'$capitalizedName' fue $action en caché." -ForegroundColor Magenta
+                if ($statusCode -eq 404) {
+                    Write-Host  "[Status code: $statusCode] No se encontró el pais '$capitalizedName' en la API." -f DarkYellow
+                }
+                else {
+                    Write-Host  "[Status code: $statusCode] $statusMessage" -f DarkYellow
+                }
+                Write-Host ("─" * 50) -ForegroundColor DarkGray
+                continue;
+            }
         }
 
         Show-CountryInfo $countryInfo
     }
 }
 catch {
-    Write-Host "Hubo un error: $_" -ForegroundColor Red
+    # Write-Host "Hubo un error: $_" -ForegroundColor Red
 }
 finally {
     if ($dropCacheFile.IsPresent) {
