@@ -86,7 +86,7 @@ function Show-CountryInfo {
     $label = if ($country.capital.Count -gt 1) { "Capitales" } else { "Capital" }
     Write-Host "${label}: $($country.capital -join ', ')"
 
-    Write-Host "Region: $(Get-FieldValue $country.region)"
+    Write-Host "Región: $(Get-FieldValue $country.region)"
 
     $monedas = foreach ($currency in $country.currencies.PSObject.Properties) {
         $currencyCode = $currency.Name
@@ -97,7 +97,7 @@ function Show-CountryInfo {
     $label = if ($monedas.Count -gt 1) { "Monedas" } else { "Moneda" }
     Write-Host "${label}: $($monedas -join ', ')"
 
-    Write-Host "Poblacion: $(Get-FieldValue $country.population)"
+    Write-Host "Población: $(Get-FieldValue $country.population)"
 
     if ($country.PSObject.Properties.Name -contains 'expiresAt') {
         $cacheDate = [datetime]$country.cachedAt
@@ -154,8 +154,6 @@ function Format-CountryName {
 $fileCacheName = "restcountries-cache.json"
 $cachePath = Join-Path -Path $env:TEMP -ChildPath $fileCacheName
 try {
-    if ($ttl -lt 0) { throw "No se puede enviar como TTL un tiempo negativo." }
-
     # Si no existe el archivo de caché, lo crea
     if (-not (Test-Path $cachePath)) {
         '{}' | Out-File -FilePath $cachePath -Encoding utf8
@@ -168,14 +166,14 @@ try {
     # Set para almacenar los nombres de los paises recibidos por parámetro normalizados y sin repetidos
     $countriesSet = Get-CountriesSet -countriesNames $nombre
     
-    # Para cada pais ingresado, se realiza procesamiento para dar servicio con caché o API según el caso
+    # Para cada país ingresado, se realiza procesamiento para dar servicio con caché o API según el caso
     Write-Host ("─" * 50) -ForegroundColor DarkGray
     foreach ($countryName in $countriesSet) {
-        # Formateo de pais para visualización en consola (ya que está en minúsculas)
+        # Formateo de país para visualización en consola (ya que está en minúsculas)
         $capitalizedName = Format-CountryName -Name $countryName
         Write-Host "Buscando información de '$capitalizedName'" -ForegroundColor Cyan
 
-        # Lógica para ver si el pais está en caché o debo pegarle a la API
+        # Lógica para ver si el país está en caché o debo pegarle a la API
         $isInCache = $cacheContent.PSObject.Properties.Name -contains $countryName
         $APImustBeCalled = -not $isInCache
 
@@ -205,7 +203,7 @@ try {
                 # Se agregan metadatos expiración según TTL
                 $countryInfo = Add-Expiry -apiResponseObject $countryInfo -ttlSeconds $ttl
                 
-                # Agrega o reemplaza la información del pais en el archivo de caché
+                # Agrega o reemplaza la información del país en el archivo de caché
                 $cacheContent | Add-Member -NotePropertyName $countryName -NotePropertyValue $countryInfo -Force
                 $cacheContent | ConvertTo-Json -Depth 10 | Set-Content -Path $cachePath -Encoding utf8
                 
@@ -218,7 +216,7 @@ try {
                 $statusMessage = $e.message
 
                 if ($statusCode -eq 404) {
-                    Write-Host  "[Status code: $statusCode] No se encontró el pais '$capitalizedName' en la API." -f DarkYellow
+                    Write-Host  "[Status code: $statusCode] No se encontró el país '$capitalizedName' en la API." -f DarkYellow
                 }
                 else {
                     Write-Host  "[Status code: $statusCode] $statusMessage" -f DarkYellow
