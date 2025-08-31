@@ -13,16 +13,64 @@
 #        VARALDO, RODRIGO           42772765            #
 #                                                       #
 #-------------------------------------------------------#
-param(
+
+<#
+.SYNOPSIS
+    Consultá información de países desde la API de RestCountries con soporte de caché local.
+
+.DESCRIPTION
+    Este script permite obtener información como capital, región, población y monedas de uno o más países.
+    Los resultados se guardan en caché en un archivo temporal en %TEMP% para evitar múltiples consultas a la API.
+    También se puede eliminar el archivo de caché al finalizar con un switch opcional.
+
+.PARAMETER nombre
+    Alias: -n
+    Nombre o nombres de los países a consultar. Se puede ingresar más de uno (separados por coma o en array).
+
+.PARAMETER ttl
+    Alias: -t
+    Tiempo en segundos que se mantendrán los datos en caché. Valor por defecto: 3600. Rango válido: 0 a 86400.
+
+.PARAMETER dropCacheFile
+    Alias: -d
+    Si se incluye, elimina el archivo de caché al finalizar la ejecución del script.
+
+.EXAMPLE
+    Se envían los países Argentina y Uruguay, con un ttl de 1800 segundos, y se elimina el archivo de caché.
+    .\ejercicio5.ps1 -nombre argentina,uruguay -ttl 1800 -dropCacheFile
+
+.EXAMPLE
+    Se envían los países 'El Salvador' y 'Vatican City', con un ttl de 120 segundos, sin eliminar el archivo de caché.
+    .\ejercicio5.ps1 -n "El Salvador","Vatican City" -t 120
+
+.INPUTS
+    No se reciben entradas por pipeline.
+
+.OUTPUTS
+    Información textual en consola sobre los países solicitados (capital, región, moneda, población, etc.).
+
+.NOTES
+    Autores: BIANCHI, JUAN | BROCANI, AGUSTIN | PASCUAL, PABLO | SANZ, ELISEO | VARALDO, RODRIGO
+    Versión: 1.0
+    Fecha: 31-08-2025
+
+.LINK
+    https://restcountries.com
+#>
+
+param (
     [Parameter(Mandatory = $true)]
+    [Alias("n")]
     [string[]]$nombre,
 
     [Parameter(Mandatory = $false)]
+    [Alias("t")]
     [ValidateRange(0, 86400)]
     [int]$ttl = 3600,
 
     [Parameter(Mandatory = $false)]
-    [bool]$dropCacheFile = $false
+    [Alias("d")]
+    [switch]$dropCacheFile
 )
 
 function Get-FieldValue {
@@ -170,7 +218,7 @@ catch {
     Write-Host "Hubo un error: $_" -ForegroundColor Red
 }
 finally {
-    if ($dropCacheFile) {
+    if ($dropCacheFile.IsPresent) {
         if (Test-Path $cachePath) {
             Remove-Item -Path $cachePath -Force
             Write-Host "Archivo de caché '$fileCacheName' eliminado." -ForegroundColor Magenta
