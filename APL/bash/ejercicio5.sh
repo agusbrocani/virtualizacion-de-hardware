@@ -52,7 +52,7 @@ USO:
     $0 [opciones]
 
 OPCIONES:
-    -n, --nombre NOMBRES       Países a consultar (obligatorio, varios permitidos)
+    -n, --nombre COUNTRIES_NAMES       Países a consultar (obligatorio, varios permitidos)
     -t, --ttl SEGUNDOS         Tiempo en segundos que se mantendrán los datos en caché.
                                Valor por defecto: 3600. Rango válido: 0 a ${MAX_TTL}.
     -d, --dropCacheFile        Elimina el archivo de caché al finalizar la ejecución (opcional)
@@ -79,7 +79,7 @@ EOF
 # Valores por defecto
 TTL=3600
 DROP_CACHE=false
-NOMBRES=()
+COUNTRIES_NAMES=()
 
 # Parseo de argumentos
 while [[ $# -gt 0 ]]; do
@@ -87,7 +87,7 @@ while [[ $# -gt 0 ]]; do
     -n|--nombre)
       shift
       while [[ $# -gt 0 && ! "$1" =~ ^- ]]; do
-        NOMBRES+=("$1")
+        COUNTRIES_NAMES+=("$1")
         shift
       done
       ;;
@@ -118,7 +118,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validaciones obligatorias
-if [[ ${#NOMBRES[@]} -eq 0 ]]; then
+if [[ ${#COUNTRIES_NAMES[@]} -eq 0 ]]; then
   error "Debe especificar al menos un nombre con -n o --nombre"
 fi
 
@@ -128,7 +128,7 @@ fi
     warn "Esto es una advertencia"
 
     info "Parámetros recibidos:"
-    echo "- Nombres: ${NOMBRES[*]}"
+    echo "- Nombres: ${COUNTRIES_NAMES[*]}"
     echo "- TTL: $TTL"
     echo "- Drop Cache: $DROP_CACHE"
 #!
@@ -141,6 +141,74 @@ echo '{"mensaje":"Hola mundo"}' > "$CACHE_FILE_PATH"
 
 # Mostrar el contenido del archivo
 cat "$CACHE_FILE_PATH"
+
+
+
+
+
+# Array para mantener orden y evitar duplicados
+COUNTRIES_SET=()
+
+# Función para agregar países al set
+function add_to_set() {
+  for value in "$@"; do
+    # Convertir a minúsculas para normalizar
+    value="${value,,}"
+
+    # Verificar si ya existe en el array
+    exists=false
+    for c in "${COUNTRIES_SET[@]}"; do
+      if [[ "$c" == "$value" ]]; then
+        exists=true
+        break
+      fi
+    done
+
+    # Si no existe, lo agrego
+    if [[ "$exists" == false ]]; then
+      COUNTRIES_SET+=("$value")
+    fi
+  done
+}
+
+# Agregar todos los nombres del array original
+add_to_set "${COUNTRIES_NAMES[@]}"
+
+# Iterar sobre el set respetando el orden
+for country in "${COUNTRIES_SET[@]}"; do
+  # Llamada a la API
+  response=$(curl -s "https://restcountries.com/v3.1/name/$country?fields=name,capital,region,population,currencies")
+
+  # Verificar si es error (puede ser objeto con message)
+  error_msg=$(echo "$response" | jq -r 'if type=="array" then .[0].message // empty else .message // empty end')
+
+  if [[ -n "$error_msg" ]]; then
+    warn "No se pudo obtener información para '$country': $error_msg"
+    continue
+  fi
+
+  # Si llegó hasta acá, la respuesta es válida
+  success "$response"
+done
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Opcional: borrar el archivo después
 if [[ "$DROP_CACHE" == true ]]; then
