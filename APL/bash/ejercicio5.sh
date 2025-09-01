@@ -64,6 +64,13 @@ EJEMPLOS:
 
 NOTAS:
     Los resultados se guardan en caché en '${CACHE_FILE_NAME}' para evitar múltiples consultas.
+    
+    Autores: BIANCHI, JUAN | BROCANI, AGUSTIN | PASCUAL, PABLO | SANZ, ELISEO | VARALDO, RODRIGO
+    Versión: 1.0
+    Fecha: 31-08-2025
+    
+LINK:
+    https://restcountries.com
 EOF
   exit 0
 }
