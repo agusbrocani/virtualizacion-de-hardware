@@ -61,6 +61,7 @@ OPCIONES:
 EJEMPLOS:
     ./ejercicio5.sh -n Argentina Uruguay -t 1800 -d
     ./ejercicio5.sh -n "El Salvador" "Vatican City" -t 120
+    ./ejercicio5.sh --nombre "united states" --ttl 86400 --dropCacheFile
 
 NOTAS:
     Los resultados se guardan en caché en '${CACHE_FILE_NAME}' para evitar múltiples consultas.
@@ -68,7 +69,7 @@ NOTAS:
     Autores: BIANCHI, JUAN | BROCANI, AGUSTIN | PASCUAL, PABLO | SANZ, ELISEO | VARALDO, RODRIGO
     Versión: 1.0
     Fecha: 31-08-2025
-    
+
 LINK:
     https://restcountries.com
 EOF
