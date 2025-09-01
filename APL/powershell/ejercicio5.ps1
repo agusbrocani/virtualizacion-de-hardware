@@ -210,9 +210,9 @@ try {
                     Write-Host  "[Status code: $statusCode] $statusMessage" -f DarkYellow
                 }
                 Write-Host ("─" * 50) -ForegroundColor DarkGray
-                continue;
+                continue
             }
-            
+
             $content = $response.Content | ConvertFrom-Json
             $countryInfo = $content[0]
 
