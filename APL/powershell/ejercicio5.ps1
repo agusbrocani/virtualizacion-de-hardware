@@ -197,24 +197,12 @@ try {
             $uri = "https://restcountries.com/v3.1/name/${countryName}?fields=name,capital,region,population,currencies"
             try {
                 $response = Invoke-WebRequest -Uri $uri -Method Get -UseBasicParsing
-                $content = $response.Content | ConvertFrom-Json
-                $countryInfo = $content[0]
-    
-                # Se agregan metadatos expiración según TTL
-                $countryInfo = Add-Expiry -apiResponseObject $countryInfo -ttlSeconds $ttl
-                
-                # Agrega o reemplaza la información del país en el archivo de caché
-                $cacheContent | Add-Member -NotePropertyName $countryName -NotePropertyValue $countryInfo -Force
-                $cacheContent | ConvertTo-Json -Depth 10 | Set-Content -Path $cachePath -Encoding utf8
-                
-                $action = if ($isInCache) { 'actualizado' } else { 'agregado' }
-                Write-Host "'$capitalizedName' fue $action en caché." -ForegroundColor Magenta
             }
             catch {
                 $e = $_ | ConvertFrom-Json
                 $statusCode = $e.status
                 $statusMessage = $e.message
-
+                
                 if ($statusCode -eq 404) {
                     Write-Host  "[Status code: $statusCode] No se encontró el país '$capitalizedName' en la API." -f DarkYellow
                 }
@@ -224,6 +212,19 @@ try {
                 Write-Host ("─" * 50) -ForegroundColor DarkGray
                 continue;
             }
+            
+            $content = $response.Content | ConvertFrom-Json
+            $countryInfo = $content[0]
+
+            # Se agregan metadatos expiración según TTL
+            $countryInfo = Add-Expiry -apiResponseObject $countryInfo -ttlSeconds $ttl
+            
+            # Agrega o reemplaza la información del país en el archivo de caché
+            $cacheContent | Add-Member -NotePropertyName $countryName -NotePropertyValue $countryInfo -Force
+            $cacheContent | ConvertTo-Json -Depth 10 | Set-Content -Path $cachePath -Encoding utf8
+            
+            $action = if ($isInCache) { 'actualizado' } else { 'agregado' }
+            Write-Host "'$capitalizedName' fue $action en caché." -ForegroundColor Magenta
         }
 
         Show-CountryInfo $countryInfo
