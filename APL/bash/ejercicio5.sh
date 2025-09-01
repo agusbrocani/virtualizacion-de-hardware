@@ -25,6 +25,8 @@ readonly RESET='\e[0m'
 
 # Constantes
 readonly MAX_TTL=86400
+readonly CACHE_FILE_NAME="restcountries-cache.json"
+readonly CACHE_FILE_PATH="/tmp/${CACHE_FILE_NAME}"
 
 # Funciones de salida
 function info() {
@@ -42,6 +44,28 @@ function warn() {
 function error() {
   printf "${RED}%-8s${RESET}%s\n" "[ERROR]" "$1" >&2
   exit 1
+}
+
+function show_help() {
+  cat << EOF
+USO:
+    $0 [opciones]
+
+OPCIONES:
+    -n, --nombre NOMBRES       Países a consultar (obligatorio, varios permitidos)
+    -t, --ttl SEGUNDOS         Tiempo en segundos que se mantendrán los datos en caché.
+                               Valor por defecto: 3600. Rango válido: 0 a ${MAX_TTL}.
+    -d, --dropCacheFile        Elimina el archivo de caché al finalizar la ejecución (opcional)
+    -h, --help                 Muestra mensajes de ayuda.
+
+EJEMPLOS:
+    ./ejercicio5.sh -n Argentina Uruguay -t 1800 -d
+    ./ejercicio5.sh -n "El Salvador" "Vatican City" -t 120
+
+NOTAS:
+    Los resultados se guardan en caché en '${CACHE_FILE_NAME}' para evitar múltiples consultas.
+EOF
+  exit 0
 }
 
 # Valores por defecto
@@ -73,6 +97,9 @@ while [[ $# -gt 0 ]]; do
       DROP_CACHE=true
       shift
       ;;
+    -h|--help)
+      show_help
+      ;;
     -*)
       error "Parámetro desconocido: $1"
       ;;
@@ -87,7 +114,6 @@ if [[ ${#NOMBRES[@]} -eq 0 ]]; then
   error "Debe especificar al menos un nombre con -n o --nombre"
 fi
 
-
 #! BORRAR AL FINAL
     success "Esto es una prueba de success"
     info "Esto es una prueba de info"
@@ -98,3 +124,18 @@ fi
     echo "- TTL: $TTL"
     echo "- Drop Cache: $DROP_CACHE"
 #!
+
+# Crear el archivo si no existe
+touch "$CACHE_FILE_PATH"
+
+# Escribir en el archivo
+echo '{"mensaje":"Hola mundo"}' > "$CACHE_FILE_PATH"
+
+# Mostrar el contenido del archivo
+cat "$CACHE_FILE_PATH"
+
+# Opcional: borrar el archivo después
+if [[ "$DROP_CACHE" == true ]]; then
+  rm "$CACHE_FILE_PATH"
+  success "Se ha eliminado '${CACHE_FILE_NAME}'."
+fi
