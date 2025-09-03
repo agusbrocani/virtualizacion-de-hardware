@@ -192,7 +192,7 @@ for country in "${COUNTRIES_SET[@]}"; do
 done
 
 
-
+# REVISAR ESPACIOS EN VARIABLES
 
 
 
