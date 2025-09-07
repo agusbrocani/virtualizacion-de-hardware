@@ -157,31 +157,135 @@ add_to_set() {
   done
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+show_country_info() {
+  local country_json="$1"
+
+  # Usamos jq para extraer los campos
+  local name capital region population currencies cachedAt expiresAt ttlSeconds
+
+  name="$(jq -r '.name.common' <<<"$country_json")"
+  capital="$(jq -r '.capital | join(", ")' <<<"$country_json")"
+  region="$(jq -r '.region' <<<"$country_json")"
+  population="$(jq -r '.population' <<<"$country_json")"
+
+  # Monedas -> "Nombre (Código)"
+  currencies="$(jq -r '.currencies | to_entries[] | "\(.value.name) (\(.key))"' <<<"$country_json" | paste -sd ', ')"
+
+  cachedAt="$(jq -r '.cachedAt // empty' <<<"$country_json")"
+  expiresAt="$(jq -r '.expiresAt // empty' <<<"$country_json")"
+  ttlSeconds="$(jq -r '.ttlSeconds // empty' <<<"$country_json")"
+
+  printf "\nPais: %s\n" "$name"
+  printf "Capital: %s\n" "$capital"
+  printf "Region: %s\n" "$region"
+  printf "Moneda: %s\n" "$currencies"
+  printf "Poblacion: %s\n" "$population"
+
+  if [[ -n "$cachedAt" && -n "$expiresAt" ]]; then
+    printf "Cacheado:   %s\n" "$cachedAt"
+    printf "Expira:     %s  (ttl: %ss)\n" "$expiresAt" "$ttlSeconds"
+  fi
+
+  printf '%s\n' "───────────────────────────────────────────────"
+}
+
+
+
+
+
+
+
+
+
+
+
 # cargar desde COUNTRIES_NAMES
 add_to_set "${COUNTRIES_NAMES[@]}"
 
 # iterar en orden sin duplicados
 for country in "${COUNTRIES_SET[@]}"; do
-  #! ELIMINAR: ver en consola sin romper espacios
-    printf '\n%s\n\n' "$country"
-  #!
-
-  # encode básico para URL (espacios)
+  # Encode básico para URL (espacios -> %20)
   encoded_country="${country// /%20}"
 
-  # llamada a la API
+  # Llamada a la API (campos acotados)
   response="$(curl -s "https://restcountries.com/v3.1/name/$encoded_country?fields=name,capital,region,population,currencies")"
 
-  # detectar error (objeto con .message) o array con error
+  # Detectar error (objeto con .message) o array con error
   error_msg="$(printf '%s' "$response" | jq -r 'if type=="array" then (.[0].message // empty) else (.message // empty) end')"
   if [[ -n "$error_msg" ]]; then
-    warn "No se pudo obtener informacion para país '$country': $error_msg"
+    warn "No se pudo obtener informacion para pais '$country': $error_msg"
+    printf '%s\n' "───────────────────────────────────────────────"
     continue
   fi
 
-  # exito
-  success "$response"
+  # Construir entrada a guardar (primer match)
+  entry_json="$(printf '%s' "$response" | jq -c '.[0] | {
+    name,
+    capital: (.capital // []),
+    region,
+    population,
+    currencies
+  }')"
+
+  if [[ -z "$entry_json" || "$entry_json" == "null" ]]; then
+    warn "Respuesta inesperada para '$country' (sin datos parsables)"
+    continue
+  fi
+
+  # Timestamps en formato ISO 8601 con 7 decimales y zona horaria (similar a .ToString("o"))
+  now="$(date +"%Y-%m-%dT%H:%M:%S.%N%:z"            | sed -E 's/([0-9]{7})[0-9]{2}/\1/')"
+  exp="$(date -d "+$TTL seconds" +"%Y-%m-%dT%H:%M:%S.%N%:z" | sed -E 's/([0-9]{7})[0-9]{2}/\1/')"
+
+  # Upsert atómico en el cache: clave = país normalizado ($country)
+  tmp="$(mktemp "$CACHE_DIR/.cache.tmp.XXXXXX")" || { error "No pude crear archivo temporal"; continue; }
+
+  jq \
+    --arg k "$country" \
+    --arg now "$now" \
+    --arg exp "$exp" \
+    --argjson ttl "$TTL" \
+    --argjson entry "$entry_json" '
+      ( . // {} )
+      | .[$k] = (
+          $entry + {
+            cachedAt:  $now,
+            expiresAt: $exp,
+            ttlSeconds: $ttl
+          }
+        )
+    ' "$CACHE_FILE_PATH" > "$tmp" \
+    && mv -f "$tmp" "$CACHE_FILE_PATH" \
+    || { rm -f "$tmp"; error "No se pudo actualizar el cache"; continue; }
+
+  success "Cache actualizado para '$country'"
+
+  # Leer del cache para incluir metadata (cachedAt/expiresAt/ttlSeconds)
+  country_json="$(jq -c --arg k "$country" '.[$k]' "$CACHE_FILE_PATH")"
+  show_country_info "$country_json"
 done
+
+
 
 
 # REVISAR ESPACIOS EN VARIABLES

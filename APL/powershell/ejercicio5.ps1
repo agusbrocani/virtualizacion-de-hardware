@@ -152,6 +152,7 @@ function Format-CountryName {
 }
 
 $fileCacheName = "restcountries-cache.json"
+Write-Host $env:LOCALAPPDATA -f Red
 $cachePath = Join-Path -Path $env:LOCALAPPDATA -ChildPath $fileCacheName
 try {
     # Si no existe el archivo de caché, lo crea
