@@ -26,7 +26,11 @@ readonly RESET='\e[0m'
 # Constantes
 readonly MAX_TTL=86400
 readonly CACHE_FILE_NAME="restcountries-cache.json"
-readonly CACHE_FILE_PATH="/tmp/${CACHE_FILE_NAME}"
+readonly CACHE_DIR="$HOME/.cache/ejercicio5"
+readonly CACHE_FILE_PATH="$CACHE_DIR/$CACHE_FILE_NAME"
+
+# asegurar directorio
+mkdir -p "$CACHE_DIR"
 
 # Funciones de salida
 function info() {
@@ -95,7 +99,7 @@ while [[ $# -gt 0 ]]; do
       shift
       if ! [[ "$1" =~ ^[0-9]+$ ]]; then
         error "El TTL debe ser un número entero"
-      elif (( $1 < 0 || $1 > MAX_TTL )); then
+      elif [[ $1 -lt 0 || $1 -gt $MAX_TTL ]]; then
         error "El TTL debe estar entre 0 y ${MAX_TTL}"
       fi
       TTL="$1"
@@ -119,7 +123,7 @@ done
 
 # Validaciones obligatorias
 if [[ ${#COUNTRIES_NAMES[@]} -eq 0 ]]; then
-  error "Debe especificar al menos un nombre con -n o --nombre"
+  error "Debe especificar al menos un nombre de país con -n o --nombre"
 fi
 
 #! BORRAR AL FINAL
@@ -176,19 +180,21 @@ add_to_set "${COUNTRIES_NAMES[@]}"
 
 # Iterar sobre el set respetando el orden
 for country in "${COUNTRIES_SET[@]}"; do
-  # Llamada a la API
-  response=$(curl -s "https://restcountries.com/v3.1/name/$country?fields=name,capital,region,population,currencies")
+  echo $country
 
-  # Verificar si es error (puede ser objeto con message)
-  error_msg=$(echo "$response" | jq -r 'if type=="array" then .[0].message // empty else .message // empty end')
+  # # Llamada a la API
+  # response=$(curl -s "https://restcountries.com/v3.1/name/$country?fields=name,capital,region,population,currencies")
 
-  if [[ -n "$error_msg" ]]; then
-    warn "No se pudo obtener información para '$country': $error_msg"
-    continue
-  fi
+  # # Verificar si es error (puede ser objeto con message)
+  # error_msg=$(echo "$response" | jq -r 'if type=="array" then .[0].message // empty else .message // empty end')
 
-  # Si llegó hasta acá, la respuesta es válida
-  success "$response"
+  # if [[ -n "$error_msg" ]]; then
+  #   warn "No se pudo obtener información para '$country': $error_msg"
+  #   continue
+  # fi
+
+  # # Si llegó hasta acá, la respuesta es válida
+  # success "$response"
 done
 
 

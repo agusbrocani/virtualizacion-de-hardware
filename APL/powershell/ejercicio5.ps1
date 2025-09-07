@@ -58,26 +58,20 @@
     https://restcountries.com
 #>
 
-try {
-    param (
-        [Parameter(Mandatory = $true)]
-        [Alias("n")]
-        [string[]]$nombre,
+param (
+    [Parameter(Mandatory = $true)]
+    [Alias("n")]
+    [string[]]$nombre,
     
-        [Parameter(Mandatory = $false)]
-        [Alias("t")]
-        [ValidateRange(0, 86400)]
-        [int]$ttl = 3600,
+    [Parameter(Mandatory = $false)]
+    [Alias("t")]
+    [ValidateRange(0, 86400)]
+    [int]$ttl = 3600,
     
-        [Parameter(Mandatory = $false)]
-        [Alias("d")]
-        [switch]$dropCacheFile
-    )
-}
-catch {
-    Write-Host "Error en el envío de parámetros: $_" -ForegroundColor Red
-    return
-}
+    [Parameter(Mandatory = $false)]
+    [Alias("d")]
+    [switch]$dropCacheFile
+)
 
 function Get-FieldValue {
     param ([Parameter(Position = 0)] $field)
