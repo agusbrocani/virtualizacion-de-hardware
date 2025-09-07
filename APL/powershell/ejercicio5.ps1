@@ -134,8 +134,8 @@ function Get-CountriesSet {
     $countriesSet = [System.Collections.Generic.HashSet[string]]::new()
 
     foreach ($name in $countriesNames) {
-        # Agregar en minúsculas
-        [void]$countriesSet.Add($name.ToLowerInvariant())
+        # Agregar el nombre en minúsculas y sin espacios iniciales y finales
+        [void]$countriesSet.Add($name.ToLowerInvariant().Trim())
     }
 
     return $countriesSet
