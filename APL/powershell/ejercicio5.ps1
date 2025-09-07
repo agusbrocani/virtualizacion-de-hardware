@@ -152,7 +152,7 @@ function Format-CountryName {
 }
 
 $fileCacheName = "restcountries-cache.json"
-$cachePath = Join-Path -Path $env:TEMP -ChildPath $fileCacheName
+$cachePath = Join-Path -Path $env:LOCALAPPDATA -ChildPath $fileCacheName
 try {
     # Si no existe el archivo de caché, lo crea
     if (-not (Test-Path $cachePath)) {
