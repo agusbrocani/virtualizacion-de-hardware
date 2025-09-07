@@ -126,75 +126,61 @@ if [[ ${#COUNTRIES_NAMES[@]} -eq 0 ]]; then
   error "Debe especificar al menos un nombre de país con -n o --nombre"
 fi
 
-#! BORRAR AL FINAL
-    success "Esto es una prueba de success"
-    info "Esto es una prueba de info"
-    warn "Esto es una advertencia"
-
-    info "Parámetros recibidos:"
-    echo "- Nombres: ${COUNTRIES_NAMES[*]}"
-    echo "- TTL: $TTL"
-    echo "- Drop Cache: $DROP_CACHE"
-#!
-
 # Crear el archivo si no existe
 touch "$CACHE_FILE_PATH"
 
 # Escribir en el archivo
-echo '{"mensaje":"Hola mundo"}' > "$CACHE_FILE_PATH"
+echo '{}' > "$CACHE_FILE_PATH"
 
-# Mostrar el contenido del archivo
-cat "$CACHE_FILE_PATH"
+# Declaración de array de paises sin duplicados normalizados
+declare -a COUNTRIES_SET=()
+declare -A _SEEN=()
 
+# normalizar: trim + lowercase
+normalize() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"   # trim inicio
+  s="${s%"${s##*[![:space:]]}"}"   # trim fin
+  LC_ALL=C s="${s,,}"               # a minusculas
+  printf '%s' "$s"
+}
 
-
-
-
-# Array para mantener orden y evitar duplicados
-COUNTRIES_SET=()
-
-# Función para agregar países al set
-function add_to_set() {
+add_to_set() {
+  local value norm
   for value in "$@"; do
-    # Convertir a minúsculas para normalizar
-    value="${value,,}"
-
-    # Verificar si ya existe en el array
-    exists=false
-    for c in "${COUNTRIES_SET[@]}"; do
-      if [[ "$c" == "$value" ]]; then
-        exists=true
-        break
-      fi
-    done
-
-    # Si no existe, lo agrego
-    if [[ "$exists" == false ]]; then
-      COUNTRIES_SET+=("$value")
+    norm="$(normalize "$value")"
+    [[ -z "$norm" ]] && continue          # saltear vacios
+    if [[ -z "${_SEEN[$norm]+x}" ]]; then # no visto -> agregar
+      _SEEN["$norm"]=1
+      COUNTRIES_SET+=("$norm")
     fi
   done
 }
 
-# Agregar todos los nombres del array original
+# cargar desde COUNTRIES_NAMES
 add_to_set "${COUNTRIES_NAMES[@]}"
 
-# Iterar sobre el set respetando el orden
+# iterar en orden sin duplicados
 for country in "${COUNTRIES_SET[@]}"; do
-  echo $country
+  #! ELIMINAR: ver en consola sin romper espacios
+    printf '\n%s\n\n' "$country"
+  #!
 
-  # # Llamada a la API
-  # response=$(curl -s "https://restcountries.com/v3.1/name/$country?fields=name,capital,region,population,currencies")
+  # encode básico para URL (espacios)
+  encoded_country="${country// /%20}"
 
-  # # Verificar si es error (puede ser objeto con message)
-  # error_msg=$(echo "$response" | jq -r 'if type=="array" then .[0].message // empty else .message // empty end')
+  # llamada a la API
+  response="$(curl -s "https://restcountries.com/v3.1/name/$encoded_country?fields=name,capital,region,population,currencies")"
 
-  # if [[ -n "$error_msg" ]]; then
-  #   warn "No se pudo obtener información para '$country': $error_msg"
-  #   continue
-  # fi
+  # detectar error (objeto con .message) o array con error
+  error_msg="$(printf '%s' "$response" | jq -r 'if type=="array" then (.[0].message // empty) else (.message // empty) end')"
+  if [[ -n "$error_msg" ]]; then
+    warn "No se pudo obtener informacion para país '$country': $error_msg"
+    continue
+  fi
 
-  # # Si llegó hasta acá, la respuesta es válida
-  # success "$response"
+  # exito
+  success "$response"
 done
 
 

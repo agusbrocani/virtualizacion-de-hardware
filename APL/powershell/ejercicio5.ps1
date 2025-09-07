@@ -163,7 +163,7 @@ try {
     # Carga en Hashtable del contenido del archivo de caché para realizar búsquedas
     $cacheContent = Get-Content $cachePath -Raw | ConvertFrom-Json
 
-    # Set para almacenar los nombres de los paises recibidos por parámetro normalizados y sin repetidos
+    # Set para almacenar los nombres de los países recibidos por parámetro normalizados y sin repetidos
     $countriesSet = Get-CountriesSet -countriesNames $nombre
     
     # Para cada país ingresado, se realiza procesamiento para dar servicio con caché o API según el caso
