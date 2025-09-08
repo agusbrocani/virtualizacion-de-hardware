@@ -126,17 +126,17 @@ if [[ ${#COUNTRIES_NAMES[@]} -eq 0 ]]; then
   error "Debe especificar al menos un nombre de país con -n o --nombre"
 fi
 
-# Asegurar que exista la carpeta de caché
+# Asegurar que exista el directorio de caché
 mkdir -p "$CACHE_DIR"
 
 # Crear el archivo de caché vacío solo si no existe
 [[ -f "$CACHE_FILE_PATH" ]] || echo '{}' > "$CACHE_FILE_PATH"
 
-# Declaración de array de paises sin duplicados normalizados
+# Declaración de array (que funciona como un set) de paises sin duplicados normalizados
 declare -a COUNTRIES_SET=()
 declare -A _SEEN=()
 
-# normalizar: trim + lowercase
+# trim + lowercase
 normalize() {
   local s="$1"
   s="${s#"${s%%[![:space:]]*}"}"   # trim inicio
@@ -157,28 +157,7 @@ add_to_set() {
   done
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-show_country_info() {
+function show_country_info() {
   local country_json="$1"
 
   # Usamos jq para extraer los campos
@@ -203,35 +182,29 @@ show_country_info() {
   printf "Poblacion: %s\n" "$population"
 
   if [[ -n "$cachedAt" && -n "$expiresAt" ]]; then
-    printf "Cacheado:   %s\n" "$cachedAt"
-    printf "Expira:     %s  (ttl: %ss)\n" "$expiresAt" "$ttlSeconds"
+    # Convertimos a formato dd/MM/yyyy HH:mm:ss
+    local cached_fmt expires_fmt
+    cached_fmt="$(date -d "$cachedAt" +"%d/%m/%Y %H:%M:%S")"
+    expires_fmt="$(date -d "$expiresAt" +"%d/%m/%Y %H:%M:%S")"
+
+    printf "Cacheado:   %s\n" "$cached_fmt"
+    printf "Expira:     %s  (ttl: %ss)\n" "$expires_fmt" "$ttlSeconds"
   fi
 
   printf '%s\n' "───────────────────────────────────────────────"
 }
 
-
-
-
-
-
-
-
-
-
-
-# cargar desde COUNTRIES_NAMES
+# Cargar set desde COUNTRIES_NAMES
 add_to_set "${COUNTRIES_NAMES[@]}"
 
-# iterar en orden sin duplicados
+# Para cada país pasado por parametro, se define si está en caché o si debe consultarse a la API para dar respuesta.
 for country in "${COUNTRIES_SET[@]}"; do
   # 1) Revisar si está en caché y no expirado
   cached_json="$(jq -ce --arg k "$country" '.[$k] // empty' "$CACHE_FILE_PATH" 2>/dev/null || true)"
   APImustBeCalled=true
 
-  printf '%s\n' "$cached_json"
   if [[ -n "$cached_json" ]]; then
-    # Obtener ISO desde caché
+    # Obtener fecha de expiración en formato ISO desde caché
     exp_iso="$(jq -r --arg k "$country" '.[$k].expiresAt // empty' "$CACHE_FILE_PATH")"
     now_iso="$(date +"%Y-%m-%dT%H:%M:%S.%N%:z" | sed -E 's/([0-9]{6})[0-9]+/\1/')"
 
@@ -241,12 +214,6 @@ for country in "${COUNTRIES_SET[@]}"; do
     # Convertir a epoch (segundos desde 1970)
     exp_epoch_sec="$(date -d "$clean_exp_iso" +%s 2>/dev/null)"
     now_epoch_sec="$(date -d "$now_iso" +%s 2>/dev/null)"
-
-    # Mostrar debug
-    printf 'Exp ISO : %s\n' "$exp_iso"
-    printf 'AhoraISO: %s\n' "$now_iso"
-    printf 'Exp Sec : %s\n' "$exp_epoch_sec"
-    printf 'AhoraSec: %s\n' "$now_epoch_sec"
 
     # Verificar que ambas conversiones sean válidas antes de comparar
     if [[ -n "$exp_epoch_sec" && -n "$now_epoch_sec" ]]; then
@@ -264,19 +231,19 @@ for country in "${COUNTRIES_SET[@]}"; do
 
   $APImustBeCalled || continue
 
-  # 2) No está o venció -> llamar a la API
+  # 2) No está o venció => llamar a la API
   encoded_country="${country// /%20}"
   response="$(curl -s "https://restcountries.com/v3.1/name/$encoded_country?fields=name,capital,region,population,currencies")"
 
   # Detectar error (objeto con .message)
   error_msg="$(printf '%s' "$response" | jq -r 'if type=="array" then (.[0].message // empty) else (.message // empty) end')"
   if [[ -n "$error_msg" ]]; then
-    warn "No se pudo obtener informacion para pais '$country': $error_msg"
+    warn "No se pudo obtener información para el país '$country': $error_msg"
     printf '%s\n' "───────────────────────────────────────────────"
     continue
   fi
 
-  # 3) Armar entrada a guardar (primer match)
+  # 3) Armar entrada a guardar
   entry_json="$(printf '%s' "$response" | jq -c '.[0] | {
     name,
     capital: (.capital // []),
@@ -291,12 +258,12 @@ for country in "${COUNTRIES_SET[@]}"; do
     continue
   fi
 
-  # 4) Timestamps en ISO 8601 con 7 decimales y zona (estilo .ToString("o"))
+  # 4) Timestamps en ISO 8601 con 7 decimales y zona
   now="$(date +"%Y-%m-%dT%H:%M:%S.%N%:z"                 | sed -E 's/([0-9]{7})[0-9]{2}/\1/')"
   exp="$(date -d "+$TTL seconds" +"%Y-%m-%dT%H:%M:%S.%N%:z" | sed -E 's/([0-9]{7})[0-9]{2}/\1/')"
 
-  # 5) Upsert atómico en el caché
-  tmp="$(mktemp "$CACHE_DIR/.cache.tmp.XXXXXX")" || { error "No pude crear archivo temporal"; continue; }
+  # 5) Upsert (Update + Insert) atómico en el caché para asegurar la consistencia
+  tmp="$(mktemp "$CACHE_DIR/.cache.tmp.XXXXXX")" || { error "No se pudo crear el archivo temporal."; continue; }
   if jq \
       --arg k "$country" \
       --arg now "$now" \
@@ -315,43 +282,19 @@ for country in "${COUNTRIES_SET[@]}"; do
     mv -f "$tmp" "$CACHE_FILE_PATH"
   else
     rm -f "$tmp"
-    error "No se pudo actualizar el cache"
+    error "No se pudo actualizar el archivo de caché."
     continue
   fi
 
-  success "Cache actualizado para '$country'"
+  success "Archivo de caché actualizado para '$country'."
 
-  # 6) Mostrar desde caché (ya con metadata)
+  # 6) Mostrar desde caché
   country_json="$(jq -c --arg k "$country" '.[$k]' "$CACHE_FILE_PATH")"
   show_country_info "$country_json"
-  printf '%s\n' "───────────────────────────────────────────────"
 done
 
-
-
-
-
-
-# REVISAR ESPACIOS EN VARIABLES
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Opcional: borrar el archivo después
+# Paso opcional: borrar el archivo de caché después de la ejecución del script
 if [[ "$DROP_CACHE" == true ]]; then
   rm "$CACHE_FILE_PATH"
-  success "Se ha eliminado '${CACHE_FILE_NAME}'."
+  success "Archivo de caché '${CACHE_FILE_NAME}' eliminado."
 fi
