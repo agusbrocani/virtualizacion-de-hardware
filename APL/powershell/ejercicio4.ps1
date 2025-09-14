@@ -104,8 +104,104 @@ param(
     [string]$log,
 
     [Parameter(Mandatory = $false)]
-    [switch]$kill
+    [switch]$kill,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$__daemon  # Parámetro interno para ejecución en background
 )
+
+function Invoke-DaemonProcess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Action,
+        
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Parameters,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$RepositoryPath,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$DaemonName = "PowerShell Daemon",
+        
+        [Parameter(Mandatory = $true)]
+        [bool]$IsDaemonMode
+    )
+    
+    try {
+        if ($IsDaemonMode) {
+            # Ejecutar la acción directamente en modo demonio
+            Write-Host "Ejecutando $DaemonName en modo demonio..." -ForegroundColor Green
+            & $Action @Parameters
+        }
+        else {
+            # Verificar que no haya otro demonio corriendo
+            if (Test-DaemonRunning -RepositoryPath $RepositoryPath) {
+                throw "Ya existe un demonio activo para el repositorio '$RepositoryPath'. Use -kill para detenerlo primero."
+            }
+            
+            # Lanzar proceso en segundo plano
+            $scriptPath = $PSCommandPath
+            if (-not $scriptPath) {
+                $scriptPath = $MyInvocation.MyCommand.Path
+            }
+            if (-not $scriptPath) {
+                throw "No se pudo determinar la ruta del script actual"
+            }
+            
+            # Construir argumentos para el proceso en background
+            $argumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$scriptPath`"")
+            # Para debugging: agregar '-NoExit' para mantener ventana abierta
+            
+            # Agregar parámetros originales del script
+            foreach ($key in $Parameters.Keys) {
+                $value = $Parameters[$key]
+                if ($value -is [switch] -and $value) {
+                    $argumentList += "-$key"
+                }
+                else {
+                    $escapedValue = $value -replace '"', '""'
+                    $argumentList += "-$key", "`"$escapedValue`""
+                }
+            }
+            
+            # Agregar flag interno para modo demonio
+            $argumentList += '-__daemon'
+            
+            Write-Host "Iniciando $DaemonName en segundo plano para repositorio: $RepositoryPath" -ForegroundColor Green
+            Write-Host "Comando: pwsh.exe $($argumentList -join ' ')" -ForegroundColor Gray
+            
+            # Crear proceso en background - oculto para producción
+            $process = Start-Process -FilePath 'pwsh.exe' -ArgumentList $argumentList -PassThru -WindowStyle Hidden
+            # Para debugging: usar -WindowStyle Normal en lugar de Hidden
+            
+            # Crear archivo PID
+            $pidFile = Get-PidFilePath -RepositoryPath $RepositoryPath
+            $process.Id | Out-File -FilePath $pidFile -Force
+            
+            Write-Host "$DaemonName iniciado con PID: $($process.Id)" -ForegroundColor Cyan
+            Write-Host "Archivo PID: $pidFile" -ForegroundColor Gray
+            Write-Host "Use -kill para detener el demonio." -ForegroundColor Yellow
+            
+            # Verificar que el proceso se haya iniciado correctamente
+            Start-Sleep -Seconds 2
+            try {
+                $runningProcess = Get-Process -Id $process.Id -ErrorAction Stop
+                Write-Host "Proceso confirmado activo después de 2 segundos" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "ADVERTENCIA: El proceso pudo haber terminado inmediatamente" -ForegroundColor Yellow
+                Write-Host "Verifying log file for errors..." -ForegroundColor Yellow
+            }
+            
+            return $process.Id
+        }
+    }
+    catch {
+        throw "Error al iniciar demonio en background: $_"
+    }
+}
 
 function Read-SecurityPatterns {
     [CmdletBinding()]
@@ -221,10 +317,8 @@ function Start-GitSecurityWatcher {
         [string]$LogPath
     )
     
-    # Verificar que no haya otro demonio corriendo
-    if (Test-DaemonRunning -RepositoryPath $RepositoryPath) {
-        throw "Ya existe un demonio activo para el repositorio '$RepositoryPath'. Use -kill para detenerlo primero."
-    }
+    # NOTA: No verificamos demonio corriendo aquí porque esta función 
+    # se llama tanto desde el proceso padre como desde el proceso demonio
     
     try {
         # Crear archivo PID
@@ -332,8 +426,30 @@ try {
         # Cargar patrones de configuración
         $patterns = Read-SecurityPatterns -ConfigurationPath $configuracion
         
-        # Iniciar el demonio de monitoreo
-        Start-GitSecurityWatcher -RepositoryPath $repo -SecurityPatterns $patterns -LogPath $log
+        # Definir la acción del demonio como scriptblock
+        $daemonAction = {
+            param($RepositoryPath, $SecurityPatterns, $LogPath)
+            Start-GitSecurityWatcher -RepositoryPath $RepositoryPath -SecurityPatterns $SecurityPatterns -LogPath $LogPath
+        }
+        
+        # Preparar parámetros para el demonio
+        $daemonParameters = @{
+            repo = $repo
+            configuracion = $configuracion
+            log = $log
+        }
+        
+        # Verificar si estamos en modo demonio
+        if ($__daemon) {
+            # Ejecutar directamente en modo demonio
+            Write-Host "Modo demonio detectado. Ejecutando Start-GitSecurityWatcher directamente..." -ForegroundColor Cyan
+            Start-GitSecurityWatcher -RepositoryPath $repo -SecurityPatterns $patterns -LogPath $log
+        }
+        else {
+            # Usar el cmdlet personalizado para lanzar en background
+            Invoke-DaemonProcess -Action $daemonAction -Parameters $daemonParameters -RepositoryPath $repo -DaemonName "Git Security Monitor" -IsDaemonMode $false
+            exit 0
+        }
     }
 }
 catch {
