@@ -20,7 +20,7 @@
 
 .DESCRIPTION
     Este script permite obtener información como capital, región, población y monedas de uno o más países.
-    Los resultados se guardan en caché en un archivo temporal en %TEMP% para evitar múltiples consultas a la API.
+    Los resultados se guardan en un archivo de caché para evitar múltiples consultas a la API.
     También se puede eliminar el archivo de caché al finalizar con un switch opcional.
 
 .PARAMETER nombre
