@@ -329,8 +329,6 @@ function Start-GitSecurityWatcher {
         Write-Host "PID del demonio: $PID" -ForegroundColor Cyan
         Write-Host "Archivo PID creado en: $pidFile" -ForegroundColor Gray
         
-        # COMENTADO: FileSystemWatcher para pruebas
-        <#
         $gitPath = Join-Path $RepositoryPath ".git"
         $watcher = New-Object System.IO.FileSystemWatcher
         $watcher.Path = $gitPath
@@ -346,59 +344,67 @@ function Start-GitSecurityWatcher {
         $action = {
             param($sender, $eventArgs)
             
-            $now = [DateTime]::Now
-            if (($now - $script:lastEventTime) -lt $script:debounceInterval) {
-                return
+            try {
+                $now = [DateTime]::Now
+                if (($now - $script:lastEventTime) -lt $script:debounceInterval) {
+                    return
+                }
+                $script:lastEventTime = $now
+                
+                $changedFile = $eventArgs.FullPath
+                $fileName = Split-Path $changedFile -Leaf
+                
+                if ($fileName -eq "HEAD" -or 
+                    $changedFile -like "*\refs\heads\*" -or 
+                    $fileName -eq "packed-refs") {
+                    
+                    Write-Host "Cambio detectado en: $changedFile" -ForegroundColor Yellow
+                    
+                    # Integración con funciones de escaneo usando $using: para acceder a variables del scope padre
+                    $modifiedFiles = Get-ModifiedFiles -RepositoryPath $using:RepositoryPath
+                    
+                    foreach ($file in $modifiedFiles) {
+                        $fullPath = Join-Path $using:RepositoryPath $file
+                        $alerts = Scan-FileForSecrets -FilePath $fullPath -SecurityPatterns $using:SecurityPatterns
+                        
+                        foreach ($alert in $alerts) {
+                            Write-SecurityAlert -Alert $alert -LogPath $using:LogPath
+                        }
+                    }
+                }
             }
-            $script:lastEventTime = $now
-            
-            $changedFile = $eventArgs.FullPath
-            $fileName = Split-Path $changedFile -Leaf
-            
-            if ($fileName -eq "HEAD" -or 
-                $changedFile -like "*\refs\heads\*" -or 
-                $fileName -eq "packed-refs") {
-                
-                Write-Host "Cambio detectado en: $changedFile" -ForegroundColor Yellow
-                
-                # Aquí se llamarán las funciones de escaneo una vez implementadas
-                # Get-ModifiedFiles y Scan-FileForSecrets
+            catch {
+                Write-Host "Error en el evento FileSystemWatcher: $_" -ForegroundColor Red
             }
         }
         
         Register-ObjectEvent -InputObject $watcher -EventName "Changed" -Action $action
         Register-ObjectEvent -InputObject $watcher -EventName "Created" -Action $action
-        #>
         
         Write-Host "Demonio iniciado correctamente. Use -kill para detenerlo." -ForegroundColor Green
         Write-Host "Presione Ctrl+C para simular terminación manual del demonio." -ForegroundColor Cyan
         
-        # Simulación simple del demonio para pruebas
+        # Bucle principal del demonio
         $counter = 0
         try {
             while ($true) {
-                Start-Sleep -Seconds 3
+                Start-Sleep -Seconds 10
                 $counter++
                 
-                Write-Host "Demonio activo - Ciclo #$counter (PID: $PID)" -ForegroundColor DarkGreen
+                Write-Verbose "Demonio activo - Ciclo #$counter (PID: $PID)"
                 
                 # Verificar si el archivo PID aún existe (método de control)
                 if (-not (Test-Path $pidFile)) {
                     Write-Host "Archivo PID eliminado. Deteniendo demonio..." -ForegroundColor Yellow
                     break
                 }
-                
-                # Simular alguna actividad cada 5 ciclos
-                if ($counter % 5 -eq 0) {
-                    Write-Host "Verificando estado del repositorio..." -ForegroundColor Magenta
-                }
             }
         }
         finally {
-            # COMENTADO: Cleanup del FileSystemWatcher
-            # $watcher.EnableRaisingEvents = $false
-            # $watcher.Dispose()
-            # Get-EventSubscriber | Unregister-Event -ErrorAction SilentlyContinue
+            # Cleanup del FileSystemWatcher
+            $watcher.EnableRaisingEvents = $false
+            $watcher.Dispose()
+            Get-EventSubscriber | Unregister-Event -ErrorAction SilentlyContinue
             
             Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
             Write-Host "Demonio detenido y recursos liberados." -ForegroundColor Red
@@ -412,8 +418,170 @@ function Start-GitSecurityWatcher {
     }
 }
 
-# TODO: Implementar escaneo de patrones (Get-ModifiedFiles, Scan-FileForSecrets)
-# TODO: Implementar manejo de logs (Write-SecurityAlert)
+# Funciones de escaneo de seguridad
+function Get-ModifiedFiles {
+    # Obtiene archivos modificados en el último commit de Git
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepositoryPath,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$CommitHash = "HEAD"
+    )
+    
+    try {
+        Push-Location $RepositoryPath
+        
+        # Obtener archivos modificados en el commit especificado (post-commit)
+        $modifiedFiles = git diff-tree --no-commit-id --name-only -r $CommitHash 2>$null
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Verbose "No se pudo obtener archivos del commit $CommitHash"
+            return @()
+        }
+        
+        # Filtrar solo archivos de texto relevantes para escaneo de seguridad
+        $validFiles = $modifiedFiles | Where-Object { 
+            $_ -and 
+            (Test-Path (Join-Path $RepositoryPath $_) -PathType Leaf) -and
+            $_ -notlike "*.exe" -and
+            $_ -notlike "*.dll" -and
+            $_ -notlike "*.bin" -and
+            $_ -notlike "*.png" -and
+            $_ -notlike "*.jpg" -and
+            $_ -notlike "*.gif" -and
+            $_ -notlike "*.pdf"
+        }
+        
+        Write-Verbose "Encontrados $($validFiles.Count) archivos modificados válidos para escaneo"
+        return $validFiles
+    }
+    catch {
+        Write-Error "Error al obtener archivos modificados: $_"
+        return @()
+    }
+    finally {
+        Pop-Location
+    }
+}
+
+function Scan-FileForSecrets {
+    # Escanea un archivo en busca de patrones de seguridad sospechosos
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        
+        [Parameter(Mandatory = $true)]
+        [hashtable]$SecurityPatterns
+    )
+    
+    $alerts = @()
+    
+    try {
+        if (-not (Test-Path $FilePath -PathType Leaf)) {
+            Write-Warning "Archivo no encontrado: $FilePath"
+            return $alerts
+        }
+        
+        $lines = Get-Content $FilePath -ErrorAction Stop
+        Write-Verbose "Escaneando archivo: $FilePath ($($lines.Count) líneas)"
+        
+        # Escanear patrones simples
+        foreach ($pattern in $SecurityPatterns.SimplePatterns) {
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+                if ($lines[$i] -match [regex]::Escape($pattern)) {
+                    $alerts += @{
+                        File = $FilePath
+                        Pattern = $pattern
+                        LineNumber = $i + 1
+                        LineContent = $lines[$i].Trim()
+                        PatternType = "Simple"
+                    }
+                    Write-Verbose "Patrón simple encontrado: '$pattern' en línea $($i + 1)"
+                }
+            }
+        }
+        
+        # Escanear patrones regex
+        foreach ($regexPattern in $SecurityPatterns.RegexPatterns) {
+            try {
+                for ($i = 0; $i -lt $lines.Count; $i++) {
+                    if ($lines[$i] -match $regexPattern) {
+                        $alerts += @{
+                            File = $FilePath
+                            Pattern = $regexPattern
+                            LineNumber = $i + 1
+                            LineContent = $lines[$i].Trim()
+                            PatternType = "Regex"
+                            Match = $matches[0]
+                        }
+                        Write-Verbose "Patrón regex encontrado: '$regexPattern' en línea $($i + 1)"
+                    }
+                }
+            }
+            catch {
+                Write-Warning "Patrón regex inválido: $regexPattern - $_"
+            }
+        }
+        
+        Write-Verbose "Escaneo completado: $($alerts.Count) alertas encontradas"
+        return $alerts
+    }
+    catch {
+        Write-Error "Error al escanear archivo ${FilePath}: $_"
+        return $alerts
+    }
+}
+
+function Write-SecurityAlert {
+    # Escribe una alerta de seguridad al archivo de log
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Alert,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$LogPath
+    )
+    
+    try {
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $fileName = Split-Path $Alert.File -Leaf
+        
+        # Formatear entrada del log según especificación
+        $logEntry = "[$timestamp] Alerta: patrón '$($Alert.Pattern)' encontrado en el archivo '$fileName'"
+        
+        if ($Alert.LineNumber) {
+            $logEntry += " (línea $($Alert.LineNumber))"
+        }
+        
+        # Agregar información adicional si está disponible
+        if ($Alert.PatternType) {
+            $logEntry += " [Tipo: $($Alert.PatternType)]"
+        }
+        
+        # Crear directorio padre si no existe
+        $parentDir = Split-Path $LogPath -Parent
+        if ($parentDir -and -not (Test-Path $parentDir)) {
+            New-Item -Path $parentDir -ItemType Directory -Force | Out-Null
+        }
+        
+        # Escribir al log
+        Add-Content -Path $LogPath -Value $logEntry -Encoding UTF8
+        
+        # También mostrar en consola para feedback inmediato
+        Write-Host $logEntry -ForegroundColor Red
+        
+        Write-Verbose "Alerta escrita al log: $LogPath"
+    }
+    catch {
+        Write-Error "Error al escribir alerta al log: $_"
+    }
+}
+
+
 
 # Lógica principal del script
 try {
