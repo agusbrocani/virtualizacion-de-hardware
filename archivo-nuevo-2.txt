@@ -1,0 +1,7 @@
+testing_token=abc123
+new_api_key=sk_live_abcdef123456
+admin_password=super_secret_admin_123
+db_secret=production_database_key_456
+ssh_private_key=-----BEGIN RSA PRIVATE KEY-----
+jwt_secret=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
+api_key=secret123456;

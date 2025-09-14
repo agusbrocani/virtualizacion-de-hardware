@@ -1,0 +1,6 @@
+password:soyunpassword
+api_key=abc123456789
+secret_token=xyz987654321
+database_password=admin123
+ssh_private_key=-----BEGIN RSA PRIVATE KEY-----
+jwt_secret=my_super_secret_jwt_key

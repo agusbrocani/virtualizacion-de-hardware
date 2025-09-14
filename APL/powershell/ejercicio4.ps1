@@ -172,9 +172,9 @@ function Invoke-DaemonProcess {
             Write-Host "Iniciando $DaemonName en segundo plano para repositorio: $RepositoryPath" -ForegroundColor Green
             Write-Host "Comando: pwsh.exe $($argumentList -join ' ')" -ForegroundColor Gray
             
-            # Crear proceso en background - oculto para producción
-            $process = Start-Process -FilePath 'pwsh.exe' -ArgumentList $argumentList -PassThru -WindowStyle Hidden
-            # Para debugging: usar -WindowStyle Normal en lugar de Hidden
+            # Crear proceso en background - visible para debugging
+            $process = Start-Process -FilePath 'pwsh.exe' -ArgumentList $argumentList -PassThru -WindowStyle Normal
+            # Para producción: usar -WindowStyle Hidden en lugar de Normal
             
             # Crear archivo PID
             $pidFile = Get-PidFilePath -RepositoryPath $RepositoryPath
@@ -338,48 +338,161 @@ function Start-GitSecurityWatcher {
         $watcher.Filter = "*"
         $watcher.NotifyFilter = [System.IO.NotifyFilters]::LastWrite -bor [System.IO.NotifyFilters]::FileName
         
-        $lastEventTime = [DateTime]::MinValue
-        $debounceInterval = [TimeSpan]::FromSeconds(2)
+        # Enfoque simplificado: usar archivos temporales para pasar información al evento
+        $configFile = Join-Path $env:TEMP "git-security-config-$PID.json"
+        $config = @{
+            RepositoryPath = $RepositoryPath
+            SecurityPatterns = $SecurityPatterns
+            LogPath = $LogPath
+        }
+        $config | ConvertTo-Json -Depth 10 | Out-File -FilePath $configFile -Encoding UTF8
+        
+        # Variables para debounce mechanism
+        $lastProcessTime = [DateTime]::MinValue
+        $debounceIntervalMs = 2000  # 2 segundos de debounce
+        $processingLock = $false
         
         $action = {
             param($sender, $eventArgs)
             
             try {
-                $now = [DateTime]::Now
-                if (($now - $script:lastEventTime) -lt $script:debounceInterval) {
-                    return
-                }
-                $script:lastEventTime = $now
-                
                 $changedFile = $eventArgs.FullPath
                 $fileName = Split-Path $changedFile -Leaf
                 
+                Write-Verbose "Evento detectado: $($eventArgs.ChangeType) en $fileName"
+                
                 if ($fileName -eq "HEAD" -or 
+                    $fileName -eq "COMMIT_EDITMSG" -or
                     $changedFile -like "*\refs\heads\*" -or 
                     $fileName -eq "packed-refs") {
                     
-                    Write-Host "Cambio detectado en: $changedFile" -ForegroundColor Yellow
+                    Write-Verbose "Cambio detectado en: $changedFile"
                     
-                    # Integración con funciones de escaneo usando $using: para acceder a variables del scope padre
-                    $modifiedFiles = Get-ModifiedFiles -RepositoryPath $using:RepositoryPath
+                    # DEBOUNCE MECHANISM MEJORADO: Evitar procesamiento duplicado basado en commit hash
+                    $configFiles = Get-ChildItem "$env:TEMP\git-security-config-*.json" | Sort-Object LastWriteTime -Descending
+                    if ($configFiles.Count -eq 0) {
+                        Write-Verbose "ERROR: No se encontró archivo de configuración"
+                        return
+                    }
+                    
+                    $config = Get-Content $configFiles[0].FullName | ConvertFrom-Json
+                    $repoPath = $config.RepositoryPath
+                    
+                    # Obtener el hash del commit actual
+                    Push-Location $repoPath
+                    $currentCommitHash = git rev-parse HEAD 2>$null
+                    Pop-Location
+                    
+                    if (-not $currentCommitHash) {
+                        Write-Verbose "No se pudo obtener el hash del commit actual"
+                        return
+                    }
+                    
+                    # Crear archivo de control basado en commit hash
+                    $pidFromConfig = $configFiles[0].BaseName.Split('-')[-1]
+                    $processedCommitsFile = "$env:TEMP\git-security-processed-$pidFromConfig.json"
+                    
+                    # Cargar commits ya procesados
+                    $processedCommits = @{}
+                    if (Test-Path $processedCommitsFile) {
+                        try {
+                            $processedCommits = Get-Content $processedCommitsFile | ConvertFrom-Json -AsHashtable
+                        }
+                        catch {
+                            $processedCommits = @{}
+                        }
+                    }
+                    
+                    # Verificar si este commit ya fue procesado
+                    if ($processedCommits.ContainsKey($currentCommitHash)) {
+                        Write-Verbose "DEBOUNCE: Commit $($currentCommitHash.Substring(0,7)) ya fue procesado, ignorando evento"
+                        return
+                    }
+                    
+                    # Marcar este commit como procesado ANTES de procesar
+                    $processedCommits[$currentCommitHash] = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                    
+                    # Limpiar commits antiguos (mantener solo los últimos 10)
+                    if ($processedCommits.Count -gt 10) {
+                        $sortedCommits = $processedCommits.GetEnumerator() | Sort-Object Value -Descending
+                        $processedCommits = @{}
+                        for ($i = 0; $i -lt 10; $i++) {
+                            $processedCommits[$sortedCommits[$i].Key] = $sortedCommits[$i].Value
+                        }
+                    }
+                    
+                    # Guardar lista actualizada
+                    $processedCommits | ConvertTo-Json | Out-File -FilePath $processedCommitsFile -Force
+                    
+                    Write-Verbose "PROCESANDO: Nuevo commit $($currentCommitHash.Substring(0,7)) detectado, iniciando escaneo"
+                    
+                    # Pequeño delay para que Git complete las operaciones
+                    Start-Sleep -Milliseconds 500
+                    
+                    # Leer configuración del archivo temporal
+                    $logFile = $config.LogPath
+                    
+                    # Convertir PSCustomObject a Hashtable para los patrones
+                    $patterns = @{
+                        SimplePatterns = @($config.SecurityPatterns.SimplePatterns)
+                        RegexPatterns = @($config.SecurityPatterns.RegexPatterns)
+                    }
+                    
+                    Write-Verbose "Usando repositorio: '$repoPath'"
+                    
+                    if (-not $repoPath) {
+                        Write-Verbose "ERROR: repoPath está vacío"
+                        return
+                    }
+                    
+                    # DEBUG: Verificar directamente git diff-tree (solo en modo verbose)
+                    Write-Verbose "DEBUG: Ejecutando git diff-tree directamente..."
+                    Push-Location $repoPath
+                    $gitOutput = git diff-tree --no-commit-id --name-only -r HEAD 2>$null
+                    Write-Verbose "DEBUG: Git output: '$gitOutput'"
+                    Write-Verbose "DEBUG: LASTEXITCODE: $LASTEXITCODE"
+                    Pop-Location
+                    
+                    # Las funciones están disponibles en el contexto del daemon
+                    $modifiedFiles = & (Get-Command Get-ModifiedFiles) -RepositoryPath $repoPath
+                    
+                    Write-Verbose "Archivos modificados encontrados: $($modifiedFiles.Count)"
+                    Write-Verbose "DEBUG: Lista de archivos: $($modifiedFiles -join ', ')"
                     
                     foreach ($file in $modifiedFiles) {
-                        $fullPath = Join-Path $using:RepositoryPath $file
-                        $alerts = Scan-FileForSecrets -FilePath $fullPath -SecurityPatterns $using:SecurityPatterns
+                        $fullPath = Join-Path $repoPath $file
+                        Write-Verbose "Escaneando archivo: $file"
+                        $alerts = & (Get-Command Scan-FileForSecrets) -FilePath $fullPath -SecurityPatterns $patterns
+                        
+                        Write-Verbose "Alertas encontradas en $file`: $($alerts.Count)"
                         
                         foreach ($alert in $alerts) {
-                            Write-SecurityAlert -Alert $alert -LogPath $using:LogPath
+                            & (Get-Command Write-SecurityAlert) -Alert $alert -LogPath $logFile
                         }
                     }
                 }
             }
             catch {
-                Write-Host "Error en el evento FileSystemWatcher: $_" -ForegroundColor Red
+                Write-Verbose "Error en el evento FileSystemWatcher: $_"
+                Write-Verbose "Detalles del error: $($_.Exception.Message)"
             }
         }
         
         Register-ObjectEvent -InputObject $watcher -EventName "Changed" -Action $action
         Register-ObjectEvent -InputObject $watcher -EventName "Created" -Action $action
+        
+        # Limpiar archivo de configuración al finalizar
+        Register-EngineEvent PowerShell.Exiting -Action {
+            $configFiles = Get-ChildItem "$env:TEMP\git-security-config-*.json" -ErrorAction SilentlyContinue
+            foreach ($file in $configFiles) {
+                Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+            }
+            # Limpiar archivos de commits procesados también
+            $processedCommitsFiles = Get-ChildItem "$env:TEMP\git-security-processed-*.json" -ErrorAction SilentlyContinue
+            foreach ($file in $processedCommitsFiles) {
+                Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+            }
+        } | Out-Null
         
         Write-Host "Demonio iniciado correctamente. Use -kill para detenerlo." -ForegroundColor Green
         Write-Host "Presione Ctrl+C para simular terminación manual del demonio." -ForegroundColor Cyan
@@ -436,6 +549,9 @@ function Get-ModifiedFiles {
         # Obtener archivos modificados en el commit especificado (post-commit)
         $modifiedFiles = git diff-tree --no-commit-id --name-only -r $CommitHash 2>$null
         
+        Write-Verbose "Get-ModifiedFiles: git output = '$modifiedFiles'"
+        Write-Verbose "Get-ModifiedFiles: LASTEXITCODE = $LASTEXITCODE"
+        
         if ($LASTEXITCODE -ne 0) {
             Write-Verbose "No se pudo obtener archivos del commit $CommitHash"
             return @()
@@ -443,8 +559,13 @@ function Get-ModifiedFiles {
         
         # Filtrar solo archivos de texto relevantes para escaneo de seguridad
         $validFiles = $modifiedFiles | Where-Object { 
+            Write-Verbose "DEBUG: Evaluando archivo '$_'"
+            $fullPath = Join-Path $RepositoryPath $_
+            $exists = Test-Path $fullPath -PathType Leaf
+            Write-Verbose "DEBUG: Archivo '$_' -> Path: '$fullPath' -> Exists: $exists"
+            
             $_ -and 
-            (Test-Path (Join-Path $RepositoryPath $_) -PathType Leaf) -and
+            $exists -and
             $_ -notlike "*.exe" -and
             $_ -notlike "*.dll" -and
             $_ -notlike "*.bin" -and
@@ -485,13 +606,23 @@ function Scan-FileForSecrets {
             return $alerts
         }
         
-        $lines = Get-Content $FilePath -ErrorAction Stop
-        Write-Verbose "Escaneando archivo: $FilePath ($($lines.Count) líneas)"
+        # Leer archivo usando System.IO para evitar problemas de encoding
+        $fileContent = [System.IO.File]::ReadAllText($FilePath, [System.Text.Encoding]::UTF8)
+        # Dividir por líneas correctamente usando operador -split con fuerza de array
+        $lines = @($fileContent -split "`r?`n")
+        # Filtrar solo líneas completamente vacías, no las que solo tienen espacios
+        $lines = @($lines | Where-Object { $_ -ne '' })
+        
+        Write-Verbose "Scan-FileForSecrets: Escaneando archivo $FilePath con $($lines.Count) líneas"
+        Write-Verbose "Patrones simples: $($SecurityPatterns.SimplePatterns.Count)"
+        Write-Verbose "Patrones regex: $($SecurityPatterns.RegexPatterns.Count)"
         
         # Escanear patrones simples
         foreach ($pattern in $SecurityPatterns.SimplePatterns) {
+            Write-Verbose "Buscando patrón simple '$pattern'"
             for ($i = 0; $i -lt $lines.Count; $i++) {
                 if ($lines[$i] -match [regex]::Escape($pattern)) {
+                    Write-Verbose "MATCH ENCONTRADO! Patrón '$pattern' en línea $($i + 1)"
                     $alerts += @{
                         File = $FilePath
                         Pattern = $pattern
