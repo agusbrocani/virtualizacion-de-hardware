@@ -62,12 +62,12 @@ param (
     [Parameter(Mandatory = $true)]
     [Alias("n")]
     [string[]]$nombre,
-
+    
     [Parameter(Mandatory = $false)]
     [Alias("t")]
     [ValidateRange(0, 86400)]
     [int]$ttl = 3600,
-
+    
     [Parameter(Mandatory = $false)]
     [Alias("d")]
     [switch]$dropCacheFile
@@ -134,8 +134,8 @@ function Get-CountriesSet {
     $countriesSet = [System.Collections.Generic.HashSet[string]]::new()
 
     foreach ($name in $countriesNames) {
-        # Agregar en minúsculas
-        [void]$countriesSet.Add($name.ToLowerInvariant())
+        # Agregar el nombre en minúsculas y sin espacios iniciales y finales
+        [void]$countriesSet.Add($name.ToLowerInvariant().Trim())
     }
 
     return $countriesSet
@@ -152,7 +152,7 @@ function Format-CountryName {
 }
 
 $fileCacheName = "restcountries-cache.json"
-$cachePath = Join-Path -Path $env:TEMP -ChildPath $fileCacheName
+$cachePath = Join-Path -Path $env:LOCALAPPDATA -ChildPath $fileCacheName
 try {
     # Si no existe el archivo de caché, lo crea
     if (-not (Test-Path $cachePath)) {
@@ -163,7 +163,7 @@ try {
     # Carga en Hashtable del contenido del archivo de caché para realizar búsquedas
     $cacheContent = Get-Content $cachePath -Raw | ConvertFrom-Json
 
-    # Set para almacenar los nombres de los paises recibidos por parámetro normalizados y sin repetidos
+    # Set para almacenar los nombres de los países recibidos por parámetro normalizados y sin repetidos
     $countriesSet = Get-CountriesSet -countriesNames $nombre
     
     # Para cada país ingresado, se realiza procesamiento para dar servicio con caché o API según el caso
@@ -197,24 +197,12 @@ try {
             $uri = "https://restcountries.com/v3.1/name/${countryName}?fields=name,capital,region,population,currencies"
             try {
                 $response = Invoke-WebRequest -Uri $uri -Method Get -UseBasicParsing
-                $content = $response.Content | ConvertFrom-Json
-                $countryInfo = $content[0]
-    
-                # Se agregan metadatos expiración según TTL
-                $countryInfo = Add-Expiry -apiResponseObject $countryInfo -ttlSeconds $ttl
-                
-                # Agrega o reemplaza la información del país en el archivo de caché
-                $cacheContent | Add-Member -NotePropertyName $countryName -NotePropertyValue $countryInfo -Force
-                $cacheContent | ConvertTo-Json -Depth 10 | Set-Content -Path $cachePath -Encoding utf8
-                
-                $action = if ($isInCache) { 'actualizado' } else { 'agregado' }
-                Write-Host "'$capitalizedName' fue $action en caché." -ForegroundColor Magenta
             }
             catch {
                 $e = $_ | ConvertFrom-Json
                 $statusCode = $e.status
                 $statusMessage = $e.message
-
+                
                 if ($statusCode -eq 404) {
                     Write-Host  "[Status code: $statusCode] No se encontró el país '$capitalizedName' en la API." -f DarkYellow
                 }
@@ -222,8 +210,21 @@ try {
                     Write-Host  "[Status code: $statusCode] $statusMessage" -f DarkYellow
                 }
                 Write-Host ("─" * 50) -ForegroundColor DarkGray
-                continue;
+                continue
             }
+
+            $content = $response.Content | ConvertFrom-Json
+            $countryInfo = $content[0]
+
+            # Se agregan metadatos expiración según TTL
+            $countryInfo = Add-Expiry -apiResponseObject $countryInfo -ttlSeconds $ttl
+            
+            # Agrega o reemplaza la información del país en el archivo de caché
+            $cacheContent | Add-Member -NotePropertyName $countryName -NotePropertyValue $countryInfo -Force
+            $cacheContent | ConvertTo-Json -Depth 10 | Set-Content -Path $cachePath -Encoding utf8
+            
+            $action = if ($isInCache) { 'actualizado' } else { 'agregado' }
+            Write-Host "'$capitalizedName' fue $action en caché." -ForegroundColor Magenta
         }
 
         Show-CountryInfo $countryInfo
