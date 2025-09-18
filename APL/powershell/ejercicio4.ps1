@@ -172,9 +172,8 @@ function Invoke-DaemonProcess {
             Write-Host "Iniciando $DaemonName en segundo plano para repositorio: $RepositoryPath" -ForegroundColor Green
             Write-Host "Comando: pwsh.exe $($argumentList -join ' ')" -ForegroundColor Gray
             
-            # Crear proceso en background - visible para debugging
-            $process = Start-Process -FilePath 'pwsh.exe' -ArgumentList $argumentList -PassThru -WindowStyle Normal
-            # Para producción: usar -WindowStyle Hidden en lugar de Normal
+            # Crear proceso en background - ventana oculta
+            $process = Start-Process -FilePath 'pwsh.exe' -ArgumentList $argumentList -PassThru -WindowStyle Hidden
             
             # Crear archivo PID
             $pidFile = Get-PidFilePath -RepositoryPath $RepositoryPath
@@ -240,6 +239,7 @@ function Read-SecurityPatterns {
     }
 }
 
+# Siempre se va a guardar el archivo en el directorio TEMP del usuario 
 function Get-PidFilePath {
     [CmdletBinding()]
     param(
@@ -293,8 +293,16 @@ function Stop-GitSecurityDaemon {
         $processId = Get-Content $pidFile -ErrorAction Stop
         $process = Get-Process -Id $processId -ErrorAction Stop
         
+        # Ejecutar limpieza antes de detener el proceso
+        Write-Host "Ejecutando limpieza de archivos temporales..." -ForegroundColor Yellow
+        Clear-DaemonTempFiles -Force:$false
+        
         Stop-Process -Id $processId -Force
-        Remove-Item $pidFile -Force
+        
+        # Solo intentar eliminar el archivo PID si aún existe (la limpieza puede haberlo eliminado)
+        if (Test-Path $pidFile) {
+            Remove-Item $pidFile -Force
+        }
         
         Write-Host "Demonio detenido para repositorio: $RepositoryPath" -ForegroundColor Green
     }
@@ -321,7 +329,7 @@ function Start-GitSecurityWatcher {
     # se llama tanto desde el proceso padre como desde el proceso demonio
     
     try {
-        # Crear archivo PID
+        # Crear archivo PID y lo guardo en el file del PID
         $pidFile = Get-PidFilePath -RepositoryPath $RepositoryPath
         $PID | Out-File -FilePath $pidFile -Force
         
@@ -347,11 +355,6 @@ function Start-GitSecurityWatcher {
         }
         $config | ConvertTo-Json -Depth 10 | Out-File -FilePath $configFile -Encoding UTF8
         
-        # Variables para debounce mechanism
-        $lastProcessTime = [DateTime]::MinValue
-        $debounceIntervalMs = 2000  # 2 segundos de debounce
-        $processingLock = $false
-        
         $action = {
             param($sender, $eventArgs)
             
@@ -369,16 +372,17 @@ function Start-GitSecurityWatcher {
                     Write-Verbose "Cambio detectado en: $changedFile"
                     
                     # DEBOUNCE MECHANISM MEJORADO: Evitar procesamiento duplicado basado en commit hash
-                    $configFiles = Get-ChildItem "$env:TEMP\git-security-config-*.json" | Sort-Object LastWriteTime -Descending
-                    if ($configFiles.Count -eq 0) {
-                        Write-Verbose "ERROR: No se encontró archivo de configuración"
+                    # Usar el PID específico del demonio actual en lugar de buscar todos los archivos
+                    $configFile = "$env:TEMP\git-security-config-$PID.json"
+                    if (-not (Test-Path $configFile)) {
+                        Write-Verbose "ERROR: No se encontró archivo de configuración para PID $PID"
                         return
                     }
                     
-                    $config = Get-Content $configFiles[0].FullName | ConvertFrom-Json
+                    $config = Get-Content $configFile | ConvertFrom-Json
                     $repoPath = $config.RepositoryPath
                     
-                    # Obtener el hash del commit actual
+                    # Voy al directorio del Repo, obtengo el hash del commit actual y vuelvo
                     Push-Location $repoPath
                     $currentCommitHash = git rev-parse HEAD 2>$null
                     Pop-Location
@@ -388,9 +392,8 @@ function Start-GitSecurityWatcher {
                         return
                     }
                     
-                    # Crear archivo de control basado en commit hash
-                    $pidFromConfig = $configFiles[0].BaseName.Split('-')[-1]
-                    $processedCommitsFile = "$env:TEMP\git-security-processed-$pidFromConfig.json"
+                    # Crear archivo de control basado en commit hash usando el PID actual
+                    $processedCommitsFile = "$env:TEMP\git-security-processed-$PID.json"
                     
                     # Cargar commits ya procesados
                     $processedCommits = @{}
@@ -432,7 +435,7 @@ function Start-GitSecurityWatcher {
                     # Leer configuración del archivo temporal
                     $logFile = $config.LogPath
                     
-                    # Convertir PSCustomObject a Hashtable para los patrones
+                    # Convertir PSCustomObject a Hashtable para los patrones (me traigo los patrones a buscar y los guardo en una hashtable)
                     $patterns = @{
                         SimplePatterns = @($config.SecurityPatterns.SimplePatterns)
                         RegexPatterns = @($config.SecurityPatterns.RegexPatterns)
@@ -453,7 +456,7 @@ function Start-GitSecurityWatcher {
                     Write-Verbose "DEBUG: LASTEXITCODE: $LASTEXITCODE"
                     Pop-Location
                     
-                    # Las funciones están disponibles en el contexto del daemon
+                    # Get-Command me trae las funciones que definí en este script y con & ejecuto Get-ModifiedFiles
                     $modifiedFiles = & (Get-Command Get-ModifiedFiles) -RepositoryPath $repoPath
                     
                     Write-Verbose "Archivos modificados encontrados: $($modifiedFiles.Count)"
@@ -477,30 +480,47 @@ function Start-GitSecurityWatcher {
                 Write-Verbose "Detalles del error: $($_.Exception.Message)"
             }
         }
-        
+
+        # Me suscribo a los eventos de cambio y creación del file watcher
         Register-ObjectEvent -InputObject $watcher -EventName "Changed" -Action $action
         Register-ObjectEvent -InputObject $watcher -EventName "Created" -Action $action
         
-        # Limpiar archivo de configuración al finalizar
+        # Limpiar archivo de configuración al finalizar. Escucha al motor de powershell y antes que se cierre ejecuta
         Register-EngineEvent PowerShell.Exiting -Action {
-            $configFiles = Get-ChildItem "$env:TEMP\git-security-config-*.json" -ErrorAction SilentlyContinue
-            foreach ($file in $configFiles) {
-                Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+            try {
+                # Usar la función centralizada de limpieza
+                Write-Verbose "Evento PowerShell.Exiting activado - Limpiando archivos temporales del demonio"
+                
+                # Obtener archivos de configuración del PID actual
+                $currentPidFiles = Get-ChildItem "$env:TEMP\git-security-config-$PID-*.json" -ErrorAction SilentlyContinue
+                foreach ($file in $currentPidFiles) {
+                    Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+                    Write-Verbose "Limpiado archivo de configuración: $($file.Name)"
+                }
+                
+                # Obtener archivos de commits procesados del PID actual
+                $currentCommitFiles = Get-ChildItem "$env:TEMP\git-security-processed-$PID-*.json" -ErrorAction SilentlyContinue
+                foreach ($file in $currentCommitFiles) {
+                    Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+                    Write-Verbose "Limpiado archivo de commits procesados: $($file.Name)"
+                }
             }
-            # Limpiar archivos de commits procesados también
-            $processedCommitsFiles = Get-ChildItem "$env:TEMP\git-security-processed-*.json" -ErrorAction SilentlyContinue
-            foreach ($file in $processedCommitsFiles) {
-                Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+            catch {
+                Write-Verbose "Error durante limpieza en PowerShell.Exiting: $_"
             }
-        } | Out-Null
+        } | Out-Null # Evitar salida en consola
+        
+        Write-Host "Demonio de seguridad activo. Monitoreando cambios en: $gitPath" -ForegroundColor Green
+        Write-Host "Archivo de log: $LogPath" -ForegroundColor Gray
         
         Write-Host "Demonio iniciado correctamente. Use -kill para detenerlo." -ForegroundColor Green
-        Write-Host "Presione Ctrl+C para simular terminación manual del demonio." -ForegroundColor Cyan
+        Write-Host "El demonio se ejecuta en segundo plano de forma continua." -ForegroundColor Cyan
         
         # Bucle principal del demonio
         $counter = 0
         try {
             while ($true) {
+                # Esto es para que no se consuma CPU innecesariamente. Hacemos un sleep largo
                 Start-Sleep -Seconds 10
                 $counter++
                 
@@ -513,6 +533,15 @@ function Start-GitSecurityWatcher {
                 }
             }
         }
+        catch {
+            # Manejo de errores específicos del bucle principal
+            Write-Host "Error en el bucle principal del demonio: $_" -ForegroundColor Red
+            Write-Verbose "Detalles del error: $($_.Exception.Message)"
+            Write-Verbose "StackTrace: $($_.ScriptStackTrace)"
+            
+            # El demonio se detendrá, pero con información de diagnóstico
+            throw $_ # Re-propagar para que el catch externo también lo maneje
+        }
         finally {
             # Cleanup del FileSystemWatcher
             $watcher.EnableRaisingEvents = $false
@@ -524,9 +553,8 @@ function Start-GitSecurityWatcher {
         }
     }
     catch {
-        # Cleanup en caso de error
-        $pidFile = Get-PidFilePath -RepositoryPath $RepositoryPath
-        Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+        # El cleanup del PID ya se maneja en el finally del bucle principal
+        # Solo necesitamos propagar el error con contexto adicional
         throw "Error al iniciar el watcher: $_"
     }
 }
@@ -610,45 +638,49 @@ function Scan-FileForSecrets {
         $fileContent = [System.IO.File]::ReadAllText($FilePath, [System.Text.Encoding]::UTF8)
         # Dividir por líneas correctamente usando operador -split con fuerza de array
         $lines = @($fileContent -split "`r?`n")
-        # Filtrar solo líneas completamente vacías, no las que solo tienen espacios
-        $lines = @($lines | Where-Object { $_ -ne '' })
         
         Write-Verbose "Scan-FileForSecrets: Escaneando archivo $FilePath con $($lines.Count) líneas"
         Write-Verbose "Patrones simples: $($SecurityPatterns.SimplePatterns.Count)"
         Write-Verbose "Patrones regex: $($SecurityPatterns.RegexPatterns.Count)"
         
-        # Escanear patrones simples
+        # Escanear patrones simples - mantener números de línea originales
         foreach ($pattern in $SecurityPatterns.SimplePatterns) {
             Write-Verbose "Buscando patrón simple '$pattern'"
             for ($i = 0; $i -lt $lines.Count; $i++) {
-                if ($lines[$i] -match [regex]::Escape($pattern)) {
-                    Write-Verbose "MATCH ENCONTRADO! Patrón '$pattern' en línea $($i + 1)"
+                $currentLine = $lines[$i]
+                # Solo procesar líneas no vacías
+                if ($currentLine -ne '' -and $currentLine -match [regex]::Escape($pattern)) {
+                    $lineNumber = $i + 1  # Número de línea real en el archivo
+                    Write-Verbose "MATCH ENCONTRADO! Patrón '$pattern' en línea $lineNumber"
                     $alerts += @{
                         File = $FilePath
                         Pattern = $pattern
-                        LineNumber = $i + 1
-                        LineContent = $lines[$i].Trim()
+                        LineNumber = $lineNumber
+                        LineContent = $currentLine.Trim()
                         PatternType = "Simple"
                     }
-                    Write-Verbose "Patrón simple encontrado: '$pattern' en línea $($i + 1)"
+                    Write-Verbose "Patrón simple encontrado: '$pattern' en línea $lineNumber"
                 }
             }
         }
         
-        # Escanear patrones regex
+        # Escanear patrones regex - mantener números de línea originales
         foreach ($regexPattern in $SecurityPatterns.RegexPatterns) {
             try {
                 for ($i = 0; $i -lt $lines.Count; $i++) {
-                    if ($lines[$i] -match $regexPattern) {
+                    $currentLine = $lines[$i]
+                    # Solo procesar líneas no vacías
+                    if ($currentLine -ne '' -and $currentLine -match $regexPattern) {
+                        $lineNumber = $i + 1  # Número de línea real en el archivo
                         $alerts += @{
                             File = $FilePath
                             Pattern = $regexPattern
-                            LineNumber = $i + 1
-                            LineContent = $lines[$i].Trim()
+                            LineNumber = $lineNumber
+                            LineContent = $currentLine.Trim()
                             PatternType = "Regex"
                             Match = $matches[0]
                         }
-                        Write-Verbose "Patrón regex encontrado: '$regexPattern' en línea $($i + 1)"
+                        Write-Verbose "Patrón regex encontrado: '$regexPattern' en línea $lineNumber"
                     }
                 }
             }
@@ -712,7 +744,118 @@ function Write-SecurityAlert {
     }
 }
 
-
+function Clear-DaemonTempFiles {
+    # Limpia archivos temporales huérfanos del demonio
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [switch]$Force  # Forzar limpieza de todos los archivos, incluso de demonios activos
+    )
+    
+    try {
+        Write-Host "Iniciando limpieza de archivos temporales del demonio..." -ForegroundColor Yellow
+        
+        # Buscar todos los archivos temporales relacionados
+        $configFiles = Get-ChildItem "$env:TEMP\git-security-config-*.json" -ErrorAction SilentlyContinue
+        $processedFiles = Get-ChildItem "$env:TEMP\git-security-processed-*.json" -ErrorAction SilentlyContinue
+        $pidFiles = Get-ChildItem "$env:TEMP\git-security-daemon-*.pid" -ErrorAction SilentlyContinue
+        $debounceFiles = Get-ChildItem "$env:TEMP\git-security-debounce-*.tmp" -ErrorAction SilentlyContinue
+        
+        Write-Host "Archivos temporales encontrados:" -ForegroundColor Cyan
+        Write-Host "  • Configuración: $($configFiles.Count)" -ForegroundColor Gray
+        Write-Host "  • Commits procesados: $($processedFiles.Count)" -ForegroundColor Gray
+        Write-Host "  • Archivos PID: $($pidFiles.Count)" -ForegroundColor Gray
+        Write-Host "  • Archivos debounce obsoletos: $($debounceFiles.Count)" -ForegroundColor Gray
+        
+        $totalFiles = $configFiles.Count + $processedFiles.Count + $pidFiles.Count + $debounceFiles.Count
+        if ($totalFiles -eq 0) {
+            Write-Host "No se encontraron archivos temporales para limpiar." -ForegroundColor Green
+            return
+        }
+        
+        # Verificar qué PIDs están activos si no es limpieza forzada
+        $activePids = @()
+        if (-not $Force) {
+            foreach ($pidFile in $pidFiles) {
+                try {
+                    $pid = Get-Content $pidFile.FullName -ErrorAction Stop
+                    $process = Get-Process -Id $pid -ErrorAction Stop
+                    $activePids += $pid
+                    Write-Host "  ⚠️  PID $pid está activo - archivos relacionados serán preservados" -ForegroundColor Yellow
+                }
+                catch {
+                    # PID no activo, se puede limpiar
+                }
+            }
+        }
+        
+        $cleanedCount = 0
+        
+        # Limpiar archivos de configuración
+        foreach ($file in $configFiles) {
+            $pidFromFile = $file.BaseName.Split('-')[-1]
+            if ($Force -or $pidFromFile -notin $activePids) {
+                Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+                Write-Host "  ✓ Eliminado: $($file.Name)" -ForegroundColor Green
+                $cleanedCount++
+            }
+            else {
+                Write-Host "  → Preservado: $($file.Name) (demonio activo)" -ForegroundColor Yellow
+            }
+        }
+        
+        # Limpiar archivos de commits procesados
+        foreach ($file in $processedFiles) {
+            $pidFromFile = $file.BaseName.Split('-')[-1]
+            if ($Force -or $pidFromFile -notin $activePids) {
+                Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+                Write-Host "  ✓ Eliminado: $($file.Name)" -ForegroundColor Green
+                $cleanedCount++
+            }
+            else {
+                Write-Host "  → Preservado: $($file.Name) (demonio activo)" -ForegroundColor Yellow
+            }
+        }
+        
+        # Limpiar archivos PID (solo los huérfanos)
+        foreach ($file in $pidFiles) {
+            try {
+                $pid = Get-Content $file.FullName -ErrorAction Stop
+                $process = Get-Process -Id $pid -ErrorAction Stop
+                if ($Force) {
+                    Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+                    Write-Host "  ✓ Eliminado: $($file.Name) (forzado)" -ForegroundColor Green
+                    $cleanedCount++
+                }
+                else {
+                    Write-Host "  → Preservado: $($file.Name) (proceso activo PID $pid)" -ForegroundColor Yellow
+                }
+            }
+            catch {
+                # Archivo PID huérfano (proceso no existe)
+                Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+                Write-Host "  ✓ Eliminado: $($file.Name) (proceso no existe)" -ForegroundColor Green
+                $cleanedCount++
+            }
+        }
+        
+        # Limpiar archivos debounce obsoletos (de versiones anteriores)
+        foreach ($file in $debounceFiles) {
+            Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+            Write-Host "  ✓ Eliminado: $($file.Name) (obsoleto)" -ForegroundColor Green
+            $cleanedCount++
+        }
+        
+        Write-Host "Limpieza completada: $cleanedCount archivos eliminados de $totalFiles encontrados." -ForegroundColor Green
+        
+        if ($activePids.Count -gt 0 -and -not $Force) {
+            Write-Host "Nota: Los archivos temporales huérfanos se limpian automáticamente." -ForegroundColor Cyan
+        }
+    }
+    catch {
+        Write-Error "Error durante la limpieza de archivos temporales: $_"
+    }
+}
 
 # Lógica principal del script
 try {
