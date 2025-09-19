@@ -283,7 +283,7 @@ cleanup_temp_files() {
             pid=$(cat "$pid_file" 2>/dev/null || echo "")
             if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
                 active_pids+=("$pid")
-                log_warn "  ⚠️  PID $pid está activo - archivos relacionados serán preservados"
+                log_warn " PID $pid está activo - archivos relacionados serán preservados"
             fi
         done <<< "$pid_files"
     fi
