@@ -184,43 +184,66 @@ is_daemon_running() {
 stop_daemon() {
     local pid_file
     pid_file=$(get_pid_file)
-    
-    if ! is_daemon_running; then
+
+    if [[ ! -f "$pid_file" ]]; then
         log_error "No se encontró un demonio activo para el repositorio '$REPO_PATH'"
         exit 1
     fi
-    
+
     local pid
-    pid=$(cat "$pid_file")
-    
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+        log_warn "PID inválido o proceso inexistente. Limpio archivos y salgo."
+        rm -f "$pid_file"
+        cleanup_temp_files
+        return 0
+    fi
+
     log_info "Deteniendo demonio con PID $pid..."
-    
-    # Buscar y matar TODOS los procesos relacionados
-    local related_pids
-    related_pids=$(pgrep -f "ejercicio4.sh.*$REPO_PATH" 2>/dev/null || true)
-    
-    if [[ -n "$related_pids" ]]; then
-        log_info "Matando procesos relacionados: $related_pids"
-        echo "$related_pids" | xargs -r kill -9 2>/dev/null || true
+
+    # Escapar el REPO_PATH para regex de pkill -f
+    local repo_re
+    repo_re="$(printf '%s' "$REPO_PATH" | sed 's/[.[\*^$()+?{}|]/\\&/g')"
+
+    # 1) Enviar SIGTERM al GRUPO de procesos del daemon (si tiene su propio PGID)
+    #    (kill -<pgid> envía la señal a todo el grupo)
+    log_debug "Enviando SIGTERM al grupo -$pid y al PID $pid"
+    kill -TERM -"$pid" 2>/dev/null || true
+    kill -TERM  "$pid" 2>/dev/null || true
+
+    # 2) Terminar hijos por PPID (por si la shell creó pipeline subshells)
+    pkill -TERM -P "$pid" 2>/dev/null || true
+
+    # 3) Terminar inotifywait asociado a ESTE repo (no todos)
+    pkill -TERM -f "inotifywait.*${repo_re}(/\.git)?/" 2>/dev/null || true
+    pkill -TERM -f "inotifywait.*${repo_re}.*\.git"    2>/dev/null || true
+
+    sleep 1
+
+    # 4) Forzar KILL si queda algo vivo
+    pkill -KILL -P "$pid" 2>/dev/null || true
+    kill -KILL -"$pid" 2>/dev/null || true
+    pkill -KILL -f "inotifywait.*${repo_re}(/\.git)?/" 2>/dev/null || true
+    pkill -KILL -f "inotifywait.*${repo_re}.*\.git"    2>/dev/null || true
+
+    # 5) Verificación (solo debug)
+    local remain
+    remain="$(pgrep -a -P "$pid" 2>/dev/null || true)"
+    if [[ -n "$remain" ]]; then
+        log_warn "Aún hay hijos colgando:\n$remain"
     fi
-    
-    # También matar inotifywait relacionados
-    local inotify_pids
-    inotify_pids=$(pgrep -f "inotifywait.*$REPO_PATH" 2>/dev/null || true)
-    
-    if [[ -n "$inotify_pids" ]]; then
-        log_info "Matando procesos inotifywait: $inotify_pids"
-        echo "$inotify_pids" | xargs -r kill -9 2>/dev/null || true
+    local remain_inw
+    remain_inw="$(pgrep -a -f "inotifywait.*${repo_re}" 2>/dev/null || true)"
+    if [[ -n "$remain_inw" ]]; then
+        log_warn "inotifywait restante:\n$remain_inw"
     fi
-    
-    # Verificar que estén terminados
-    sleep 2
-    
-    # Limpiar archivos después de matar procesos
+
+    # 6) Limpieza
+    sleep 1
     log_info "Ejecutando limpieza de archivos temporales..."
     cleanup_temp_files
-    
     rm -f "$pid_file"
+
     log_info "Demonio detenido para repositorio: $REPO_PATH"
 }
 
@@ -242,9 +265,9 @@ cleanup_temp_files() {
     [[ -n "$pid_files" ]] && total_files=$((total_files + $(echo "$pid_files" | wc -l)))
     
     log_info "Archivos temporales encontrados:"
-    echo -e "  ${CYAN}•${NC} Configuración: $(echo "$config_files" | grep -c . || echo 0)"
-    echo -e "  ${CYAN}•${NC} Commits procesados: $(echo "$processed_files" | grep -c . || echo 0)"
-    echo -e "  ${CYAN}•${NC} Archivos PID: $(echo "$pid_files" | grep -c . || echo 0)"
+    echo -e " ${CYAN}-${NC} Configuración: $(printf "%s\n" "$config_files" | grep -c .)"
+    echo -e " ${CYAN}-${NC} Commits procesados: $(printf "%s\n" "$processed_files" | grep -c .)"
+    echo -e " ${CYAN}-${NC} Archivos PID: $(printf "%s\n" "$pid_files" | grep -c .)"
     
     if [[ $total_files -eq 0 ]]; then
         log_info "No se encontraron archivos temporales para limpiar."
@@ -572,9 +595,56 @@ start_daemon() {
     done
 }
 
+# Función para normalizar rutas (convertir absolutas a relativas si es posible)
+normalize_path() {
+    local input_path="$1"
+    local current_dir
+    current_dir="$(pwd)"
+    
+    # Si ya es una ruta relativa, devolverla tal como está
+    if [[ ! "$input_path" =~ ^/ ]]; then
+        echo "$input_path"
+        return
+    fi
+    
+    # Si es ruta absoluta, intentar convertir a relativa
+    if [[ "$input_path" == "$current_dir" ]]; then
+        echo "."
+        return
+    fi
+    
+    # Si la ruta absoluta comienza con el directorio actual, hacerla relativa
+    if [[ "$input_path" == "$current_dir"/* ]]; then
+        local relative_path="${input_path#$current_dir/}"
+        echo "$relative_path"
+        return
+    fi
+    
+    # Si no se puede convertir a relativa, usar la absoluta
+    echo "$input_path"
+}
+
 # Función de limpieza al salir
 cleanup_and_exit() {
     log_info "Señal de terminación recibida. Ejecutando limpieza..."
+    
+    # Matar procesos inotifywait relacionados antes de limpiar archivos
+    local inotify_pids
+    inotify_pids=$(pgrep -f "inotifywait.*\.git" 2>/dev/null || true)
+    
+    if [[ -n "$inotify_pids" ]]; then
+        log_info "Matando procesos inotifywait: $inotify_pids"
+        echo "$inotify_pids" | xargs -r kill -9 2>/dev/null || true
+    fi
+    
+    # Búsqueda adicional por procesos inotifywait
+    local more_inotify_pids
+    more_inotify_pids=$(ps aux | grep inotifywait | grep -v grep | awk '{print $2}' 2>/dev/null || true)
+    
+    if [[ -n "$more_inotify_pids" ]]; then
+        log_info "Matando TODOS los procesos inotifywait: $more_inotify_pids"
+        echo "$more_inotify_pids" | xargs -r kill -9 2>/dev/null || true
+    fi
     
     # Limpiar archivos temporales del proceso actual
     rm -f "$TEMP_DIR/${CONFIG_PREFIX}-$$.json"
@@ -634,6 +704,20 @@ main() {
         exit 1
     fi
     
+    # Normalizar rutas (convertir absolutas a relativas cuando sea posible)
+    repo_path=$(normalize_path "$repo_path")
+    if [[ -n "$config_path" ]]; then
+        config_path=$(normalize_path "$config_path")
+    fi
+    if [[ -n "$log_path" ]]; then
+        log_path=$(normalize_path "$log_path")
+    fi
+    
+    log_debug "Rutas normalizadas:"
+    log_debug "  Repositorio: $repo_path"
+    log_debug "  Configuración: $config_path"
+    log_debug "  Log: $log_path"
+    
     # Exportar variables globales
     export REPO_PATH="$repo_path"
     export CONFIG_PATH="$config_path"
@@ -669,7 +753,7 @@ main() {
                 start_daemon
             else
                 # Lanzar en background
-            log_info "Iniciando Git Security Monitor en segundo plano para repositorio: $repo_path"
+                log_info "Iniciando Git Security Monitor en segundo plano para repositorio."
                 
                 DAEMON_MODE=1 nohup "$0" -repo "$repo_path" -configuracion "$config_path" -log "$log_path" ${VERBOSE:+-verbose} >/dev/null 2>&1 &
                 local daemon_pid=$!
