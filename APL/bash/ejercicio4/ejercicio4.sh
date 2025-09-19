@@ -19,7 +19,8 @@
 set -euo pipefail
 
 # Variables globales
-readonly SCRIPT_NAME="$(basename "$0")"
+tmp="$(basename "$0")"
+readonly SCRIPT_NAME="$tmp"
 readonly TEMP_DIR="${TMPDIR:-/tmp}"
 readonly DAEMON_PREFIX="git-security-daemon"
 readonly CONFIG_PREFIX="git-security-config"
