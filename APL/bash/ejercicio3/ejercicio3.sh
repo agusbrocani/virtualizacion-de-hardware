@@ -5,7 +5,7 @@ set -euo pipefail
 #               Virtualizacion de Hardware              #
 #                                                       #
 #   APL1                                                #
-#   Nro ejercicio: 2                                    #
+#   Nro ejercicio: 3                                    #
 #                                                       #
 #   Integrantes:                                        #
 #                                                       #
