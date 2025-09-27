@@ -72,26 +72,24 @@ try {
     @{ Expression = { ($_.Split('|')[2]).Trim() } }
 
     # === Inicializar primer grupo ===
-    $parts = ($content.Count -eq 1 ? $content : $content[0]) -split '\|'
-    if ($parts.Count -ne 5) { 
-        throw "La línea inicial no tiene 5 campos: '$($content[0])'" 
-    }
+    $primeraLinea = (($content.Count -eq 1) ? $content : $content[0]).Trim()
+    $parts = $primeraLinea -split '\|'
+    if ($parts.Count -ne 5) { throw "La línea inicial no tiene 5 campos: '$primeraLinea'" }
 
     $fechaGrupo = ([datetime]$parts[1]).Date
     $fechaGrupoKey = $fechaGrupo.ToString('yyyy-MM-dd')
     $canalGrupo = $parts[2].Trim()
-
     $sumaDur = [double]$parts[3]
     $sumaNota = [int]$parts[4]
     $cnt = 1
 
-    # Acumulador JSON
     $resultados = @()
 
     # === Recorrido ===
     for ($i = 1; $i -lt $content.Count; $i++) {
-        $p = $content[$i] -split '\|'
-        if ($p.Count -ne 5) { throw "La línea $($i+1) no tiene 5 campos: '$($content[$i])'" }
+        $linea = $content[$i].Trim()
+        $p = $linea -split '\|'
+        if ($p.Count -ne 5) { throw "La línea $($i+1) no tiene 5 campos: '$linea'" }
 
         $fechaLinea = ([datetime]$p[1]).Date
         $fechaLineaKey = $fechaLinea.ToString('yyyy-MM-dd')
@@ -99,22 +97,14 @@ try {
         $durLinea = [double]$p[3]
         $notaLinea = [int]$p[4]
 
-        # Comparar por fecha y canal
         if (($canalLinea -eq $canalGrupo) -and ($fechaLineaKey -eq $fechaGrupoKey)) {
             $sumaDur += $durLinea
             $sumaNota += $notaLinea
             $cnt++
         }
         else {
-            # === Corte de grupo ===
             $promDur = [math]::Round($sumaDur / $cnt, 2)
             $promNota = [math]::Round($sumaNota / $cnt, 2)
-
-            Write-Host "Subtotal para '$canalGrupo' Fecha=$fechaGrupoKey"
-            Write-Host "  Promedio Tiempo de Respuesta: $promDur"
-            Write-Host "  Promedio Nota Satisfacción:   $promNota"
-            Write-Host "  Cantidad de registros:        $cnt"
-            Write-Host ""
 
             $resultados += [PSCustomObject]@{
                 fecha                      = $fechaGrupoKey
@@ -145,16 +135,16 @@ try {
         cantidad                   = $cnt
     }
 
-    Write-Host "Subtotal para '$canalGrupo' Fecha=$fechaGrupoKey"
-    Write-Host "  Promedio Tiempo de Respuesta: $promDur"
-    Write-Host "  Promedio Nota Satisfacción:   $promNota"
-    Write-Host "  Cantidad de registros:        $cnt"
-    Write-Host ""
-
     # === Salida ===
-    $json = $resultados | ConvertTo-Json -Depth 5
     if ($pantalla) {
-        Write-Output $json
+        foreach ($r in $resultados) {
+            Write-Host "Subtotal para '$($r.canal)' Fecha=$($r.fecha)"
+            Write-Host "  Promedio Tiempo de Respuesta: $($r.tiempo_respuesta_promedio)"
+            Write-Host "  Promedio Nota Satisfacción:   $($r.nota_satisfaccion_promedio)"
+            Write-Host "  Cantidad de registros:        $($r.cantidad)"
+            Write-Host ""
+        }
+        Write-Output ($resultados | ConvertTo-Json -Depth 5)
     }
     else {
         $outputDir = (Resolve-Path -Path $archivo -ErrorAction Stop).Path
@@ -163,7 +153,7 @@ try {
         }
         $fileName = "analisis-resultado-encuestas-$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').json"
         $path = Join-Path $outputDir $fileName
-        $json | Out-File -FilePath $path -Encoding UTF8
+        ($resultados | ConvertTo-Json -Depth 5) | Out-File -FilePath $path -Encoding UTF8
         Write-Host "Archivo generado: $path" -ForegroundColor Green
     }
 }
