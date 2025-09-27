@@ -72,8 +72,10 @@ try {
     @{ Expression = { ($_.Split('|')[2]).Trim() } }
 
     # === Inicializar primer grupo ===
-    $parts = $content[0] -split '\|'
-    if ($parts.Count -ne 5) { throw "La línea inicial no tiene 5 campos: '$($content[0])'" }
+    $parts = ($content.Count -eq 1 ? $content : $content[0]) -split '\|'
+    if ($parts.Count -ne 5) { 
+        throw "La línea inicial no tiene 5 campos: '$($content[0])'" 
+    }
 
     $fechaGrupo = ([datetime]$parts[1]).Date
     $fechaGrupoKey = $fechaGrupo.ToString('yyyy-MM-dd')
