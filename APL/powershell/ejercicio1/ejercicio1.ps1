@@ -14,6 +14,32 @@
 #                                                       #
 #-------------------------------------------------------#
 
+<#
+.SYNOPSIS
+  Analiza archivos de encuestas y genera un resumen con promedios diarios por canal.
+
+.DESCRIPTION
+  Procesa todos los archivos .txt de un directorio que contengan encuestas en formato:
+  ID|FECHA|CANAL|TIEMPO_RESPUESTA|NOTA_SATISFACCION
+  Calcula promedios por día y canal, y muestra el resultado en pantalla o lo guarda como JSON.
+
+.PARAMETER directorio
+  Directorio que contiene los archivos de encuestas a analizar.
+
+.PARAMETER archivo
+  Directorio de salida donde se guardará el archivo JSON resultante.
+
+.PARAMETER pantalla
+  Si se especifica, el resultado se mostrará por pantalla en lugar de guardarse.
+
+.EXAMPLE
+  ./ejercicio1.ps1 -d "./datos" -p
+  ./ejercicio1.ps1 -d "./datos" -a "./salidas"
+
+.NOTES
+  Solo puede usarse una opción de salida: pantalla o archivo.
+#>
+
 [CmdletBinding(DefaultParameterSetName = 'Archivo')]
 param(
     [Parameter(Mandatory = $true)]
