@@ -44,102 +44,127 @@
 param(
     [Parameter(Mandatory = $true)]
     [Alias("d")]
-    [string]$directorio,
+    [string]$directorio,  # archivo .txt a procesar
 
     [Parameter(Mandatory = $true, ParameterSetName = 'Archivo')]
     [Alias("a")]
-    [string]$archivo,
+    [string]$archivo,     # directorio donde guardar JSON
 
     [Parameter(Mandatory = $true, ParameterSetName = 'Pantalla')]
     [Alias("p")]
-    [switch]$pantalla
+    [switch]$pantalla     # mostrar por pantalla en lugar de guardar
 )
 
 try {
-    # Convertir paths recibidos en absolutos, si no lo eran
-    $directoryPath = (Resolve-Path -Path $directorio -ErrorAction Stop).Path
-
-    # Validar existencia del archivo
-    if (-not (Test-Path -Path $directoryPath -PathType Leaf)) {
-        throw "El archivo en '$directoryPath' no existe."
+    # === Validación del archivo de entrada ===
+    $inputFile = (Resolve-Path -Path $directorio -ErrorAction Stop).Path
+    if (-not (Test-Path -Path $inputFile -PathType Leaf)) {
+        throw "El archivo '$inputFile' no existe."
     }
 
-    if ($archivo) {
-        $outputFilePath = (Resolve-Path -Path $archivo -ErrorAction Stop).Path
-        $DateTime = Get-Date -Format "dd-MM-yyyy_HH-mm-ss"
-        $outputFileName = "analisis-resultado-encuestas-$DateTime.json"
-    
-        # Combinar directorio resuelto + nombre del archivo
-        $finalPath = Join-Path $outputFilePath $outputFileName
-        # Crea archivo vacío o sobrescribir si ya existe
-        New-Item -Path $finalPath -ItemType File -Force | Out-Null
-        "{}" | Out-File -FilePath $finalPath -Encoding utf8
-    }
+    # === Lectura y limpieza ===
+    $content = Get-Content -Path $inputFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    if ($content.Count -eq 0) { throw "El archivo está vacío." }
 
-    # Leer archivo
-    $content = Get-Content -Path $directoryPath
+    # === Ordenar por Fecha (día) y Canal ===
+    $content = $content | Sort-Object -Stable -Property `
+    @{ Expression = { ([datetime]($_.Split('|')[1])).Date } },
+    @{ Expression = { ($_.Split('|')[2]).Trim() } }
 
-    # Validar que haya líneas
-    if ($content.Count -eq 0) {
-        throw "El archivo está vacío."
-    }
+    # === Inicializar primer grupo ===
+    $parts = $content[0] -split '\|'
+    if ($parts.Count -ne 5) { throw "La línea inicial no tiene 5 campos: '$($content[0])'" }
 
-    # Inicializar primera línea
-    $parts = ($content.Count -eq 1 ? $content : $content[0]) -split "\|"
+    $fechaGrupo = ([datetime]$parts[1]).Date
+    $fechaGrupoKey = $fechaGrupo.ToString('yyyy-MM-dd')
+    $canalGrupo = $parts[2].Trim()
 
-    if ($parts.Count -ne 5) {
-        throw "La línea leída del archivo no tiene los 5 campos requeridos. Línea: '$($content[0])'"
-    }
-    # Variables del grupo actual
-    $ID_ENCUESTA = [int]$parts[0]
-    $FECHA = [datetime]$parts[1]
-    $TIEMPO_DE_RESPUESTA = [double]$parts[3]
-    $NOTA_SATISFACCION = [int]$parts[4]
-    $cantidad = 1  # contamos la primera línea
+    $sumaDur = [double]$parts[3]
+    $sumaNota = [int]$parts[4]
+    $cnt = 1
 
-    # Recorrer desde la segunda línea
+    # Acumulador JSON
+    $resultados = @()
+
+    # === Recorrido ===
     for ($i = 1; $i -lt $content.Count; $i++) {
-        $parts = $content[$i] -split "\|"
+        $p = $content[$i] -split '\|'
+        if ($p.Count -ne 5) { throw "La línea $($i+1) no tiene 5 campos: '$($content[$i])'" }
 
-        if ($parts.Count -ne 5) {
-            throw "La línea leída del archivo no tiene los 5 campos requeridos. Línea: '$($content[$i])'"
-        }
+        $fechaLinea = ([datetime]$p[1]).Date
+        $fechaLineaKey = $fechaLinea.ToString('yyyy-MM-dd')
+        $canalLinea = $p[2].Trim()
+        $durLinea = [double]$p[3]
+        $notaLinea = [int]$p[4]
 
-        # Datos de la línea actual
-        $Id = [int]$parts[0]
-        $Fecha = [datetime]$parts[1]
-        $Duracion = [double]$parts[3]
-        $Puntaje = [int]$parts[4]
-
-        # Verificar si pertenece al mismo grupo
-        if (($Id -eq $ID_ENCUESTA) -and ($Fecha.Date -eq $FECHA.Date)) {
-            # Acumular
-            $TIEMPO_DE_RESPUESTA += $Duracion
-            $NOTA_SATISFACCION += $Puntaje
-            $cantidad++
+        # Comparar por fecha y canal
+        if (($canalLinea -eq $canalGrupo) -and ($fechaLineaKey -eq $fechaGrupoKey)) {
+            $sumaDur += $durLinea
+            $sumaNota += $notaLinea
+            $cnt++
         }
         else {
-            # Corte de control: imprimir subtotal
-            Write-Host "Subtotal para ID=$ID_ENCUESTA Fecha=$($FECHA.ToString('yyyy-MM-dd'))"
-            Write-Host "  Promedio Tiempo de Respuesta: $($TIEMPO_DE_RESPUESTA / $cantidad)"
-            Write-Host "  Promedio Nota Satisfacción:   $($NOTA_SATISFACCION / $cantidad)"
+            # === Corte de grupo ===
+            $promDur = [math]::Round($sumaDur / $cnt, 2)
+            $promNota = [math]::Round($sumaNota / $cnt, 2)
+
+            Write-Host "Subtotal para '$canalGrupo' Fecha=$fechaGrupoKey"
+            Write-Host "  Promedio Tiempo de Respuesta: $promDur"
+            Write-Host "  Promedio Nota Satisfacción:   $promNota"
+            Write-Host "  Cantidad de registros:        $cnt"
             Write-Host ""
 
-            # Reiniciar acumuladores para nuevo grupo
-            $ID_ENCUESTA = $Id
-            $FECHA = $Fecha
-            $TIEMPO_DE_RESPUESTA = $Duracion
-            $NOTA_SATISFACCION = $Puntaje
-            $cantidad = 1
+            $resultados += [PSCustomObject]@{
+                fecha                      = $fechaGrupoKey
+                canal                      = $canalGrupo
+                tiempo_respuesta_promedio  = $promDur
+                nota_satisfaccion_promedio = $promNota
+                cantidad                   = $cnt
+            }
+
+            # Reiniciar grupo
+            $fechaGrupo = $fechaLinea
+            $fechaGrupoKey = $fechaLineaKey
+            $canalGrupo = $canalLinea
+            $sumaDur = $durLinea
+            $sumaNota = $notaLinea
+            $cnt = 1
         }
     }
 
-    # Imprimir el último grupo
-    Write-Host "Subtotal para ID=$ID_ENCUESTA Fecha=$($FECHA.ToString('yyyy-MM-dd'))"
-    Write-Host "  Promedio Tiempo de Respuesta: $($TIEMPO_DE_RESPUESTA / $cantidad)"
-    Write-Host "  Promedio Nota Satisfacción:   $($NOTA_SATISFACCION / $cantidad)"
+    # === Último grupo ===
+    $promDur = [math]::Round($sumaDur / $cnt, 2)
+    $promNota = [math]::Round($sumaNota / $cnt, 2)
+    $resultados += [PSCustomObject]@{
+        fecha                      = $fechaGrupoKey
+        canal                      = $canalGrupo
+        tiempo_respuesta_promedio  = $promDur
+        nota_satisfaccion_promedio = $promNota
+        cantidad                   = $cnt
+    }
+
+    Write-Host "Subtotal para '$canalGrupo' Fecha=$fechaGrupoKey"
+    Write-Host "  Promedio Tiempo de Respuesta: $promDur"
+    Write-Host "  Promedio Nota Satisfacción:   $promNota"
+    Write-Host "  Cantidad de registros:        $cnt"
     Write-Host ""
+
+    # === Salida ===
+    $json = $resultados | ConvertTo-Json -Depth 5
+    if ($pantalla) {
+        Write-Output $json
+    }
+    else {
+        $outputDir = (Resolve-Path -Path $archivo -ErrorAction Stop).Path
+        if (-not (Test-Path -Path $outputDir -PathType Container)) {
+            throw "La ruta '$outputDir' no es un directorio válido."
+        }
+        $fileName = "analisis-resultado-encuestas-$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').json"
+        $path = Join-Path $outputDir $fileName
+        $json | Out-File -FilePath $path -Encoding UTF8
+        Write-Host "Archivo generado: $path" -ForegroundColor Green
+    }
 }
 catch {
-    Write-Host "Hubo un error: $_" -f Red
+    Write-Host "Hubo un error: $($_.Exception.Message)" -ForegroundColor Red
 }
