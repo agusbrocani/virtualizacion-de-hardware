@@ -1,4 +1,4 @@
-Caso favorable:
+Casos favorables:
 
     .\ejercicio5.ps1 -nombre "El Salvador", "Panama", "South Africa", "HARGENTINA", "Argentina", "argentina" -ttl 1800
         "El Salvador" es un país con espacios en el nombre.
