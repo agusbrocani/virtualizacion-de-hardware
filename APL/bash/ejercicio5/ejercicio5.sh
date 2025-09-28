@@ -98,7 +98,7 @@ while [[ $# -gt 0 ]]; do
     -t|--ttl)
       shift
       if ! [[ "$1" =~ ^[0-9]+$ ]]; then
-        error "El TTL debe ser un número entero"
+        error "El TTL debe ser un número entero positivo"
       elif [[ $1 -lt 0 || $1 -gt $MAX_TTL ]]; then
         error "El TTL debe estar entre 0 y ${MAX_TTL}"
       fi

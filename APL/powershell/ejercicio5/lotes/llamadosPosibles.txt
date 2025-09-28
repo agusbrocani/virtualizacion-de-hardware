@@ -1,0 +1,21 @@
+Casos favorables:
+
+    .\ejercicio5.ps1 -nombre "El Salvador", "Panama", "South Africa", "HARGENTINA", "Argentina", "argentina" -ttl 1800
+        "El Salvador" es un país con espacios en el nombre.
+        "Panamá" es un país con dos monedas.
+        "South Africa" es un país con 3 capitales.
+        "HARGENTINA" es un país que no existe, da un warning, pero el script prosigue.
+        "Argentina", "argentina" es un pais que existe, pero al tratarse del mismo, se hizo solo 1 llamado.
+
+    .\ejercicio5.ps1 -ttl 3600 -nombre "Netherland"
+
+    .\ejercicio5.ps1 -nombre "United States" -ttl 3600
+    .\ejercicio5.ps1 -nombre "United States" -ttl 3600
+        Ejecutar 2 veces el script para probar respuesta de caché
+
+Casos donde rompe:
+    .\ejercicio5.ps1 "Argentina" -ttl 999999
+        ttl debe ser menor o igual que 86400 (1 día).
+
+    .\ejercicio5.ps1 "Argentina" -ttl -1
+        ttl debe ser mayor o igual que 0.
