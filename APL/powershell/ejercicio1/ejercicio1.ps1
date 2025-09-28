@@ -42,121 +42,76 @@
 
 [CmdletBinding(DefaultParameterSetName = 'Archivo')]
 param(
-    [Parameter(Mandatory = $true)]
-    [Alias("d")]
-    [string]$directorio,  # archivo .txt a procesar
+  [Parameter(Mandatory = $true)]
+  [Alias("d")]
+  [string]$directorio,
 
-    [Parameter(Mandatory = $true, ParameterSetName = 'Archivo')]
-    [Alias("a")]
-    [string]$archivo,     # directorio donde guardar JSON
+  [Parameter(Mandatory = $true, ParameterSetName = 'Archivo')]
+  [Alias("a")]
+  [string]$archivo,
 
-    [Parameter(Mandatory = $true, ParameterSetName = 'Pantalla')]
-    [Alias("p")]
-    [switch]$pantalla     # mostrar por pantalla en lugar de guardar
+  [Parameter(Mandatory = $true, ParameterSetName = 'Pantalla')]
+  [Alias("p")]
+  [switch]$pantalla
 )
 
 try {
-    # === Validación del archivo de entrada ===
-    $inputFile = (Resolve-Path -Path $directorio -ErrorAction Stop).Path
-    if (-not (Test-Path -Path $inputFile -PathType Leaf)) {
-        throw "El archivo '$inputFile' no existe."
+  $inputDir = (Resolve-Path -Path $directorio -ErrorAction Stop).Path
+  if (-not (Test-Path -Path $inputDir -PathType Container)) {
+    throw "La ruta '$inputDir' no es un directorio válido."
+  }
+
+  $archivos = Get-ChildItem -Path $inputDir -Filter *.txt -File
+  if ($archivos.Count -eq 0) { throw "No se encontraron archivos .txt en '$inputDir'." }
+
+  $datos = @()
+  foreach ($f in $archivos) {
+    $content = Get-Content -Path $f.FullName | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    foreach ($linea in $content) {
+      $p = $linea.Trim() -split '\|'
+      if ($p.Count -ne 5) { continue }
+      $fecha = ([datetime]$p[1]).Date.ToString('yyyy-MM-dd')
+      $canal = $p[2].Trim()
+      $dur = [double]$p[3]
+      $nota = [int]$p[4]
+      $datos += [PSCustomObject]@{fecha = $fecha; canal = $canal; dur = $dur; nota = $nota }
     }
+  }
 
-    # === Lectura y limpieza ===
-    $content = Get-Content -Path $inputFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    if ($content.Count -eq 0) { throw "El archivo está vacío." }
+  if ($datos.Count -eq 0) { throw "No se encontraron registros válidos." }
 
-    # === Ordenar por Fecha (día) y Canal ===
-    $content = $content | Sort-Object -Stable -Property `
-    @{ Expression = { ([datetime]($_.Split('|')[1])).Date } },
-    @{ Expression = { ($_.Split('|')[2]).Trim() } }
+  # Agrupar por fecha y canal
+  $agrupados = $datos | Group-Object -Property fecha, canal
+  $json = @{}
 
-    # === Inicializar primer grupo ===
-    $primeraLinea = (($content.Count -eq 1) ? $content : $content[0]).Trim()
-    $parts = $primeraLinea -split '\|'
-    if ($parts.Count -ne 5) { throw "La línea inicial no tiene 5 campos: '$primeraLinea'" }
+  foreach ($g in $agrupados) {
+    $fecha = $g.Group[0].fecha
+    $canal = $g.Group[0].canal
+    $promDur = [math]::Round(($g.Group | Measure-Object -Property dur -Average).Average, 2)
+    $promNota = [math]::Round(($g.Group | Measure-Object -Property nota -Average).Average, 2)
 
-    $fechaGrupo = ([datetime]$parts[1]).Date
-    $fechaGrupoKey = $fechaGrupo.ToString('yyyy-MM-dd')
-    $canalGrupo = $parts[2].Trim()
-    $sumaDur = [double]$parts[3]
-    $sumaNota = [int]$parts[4]
-    $cnt = 1
-
-    $resultados = @()
-
-    # === Recorrido ===
-    for ($i = 1; $i -lt $content.Count; $i++) {
-        $linea = $content[$i].Trim()
-        $p = $linea -split '\|'
-        if ($p.Count -ne 5) { throw "La línea $($i+1) no tiene 5 campos: '$linea'" }
-
-        $fechaLinea = ([datetime]$p[1]).Date
-        $fechaLineaKey = $fechaLinea.ToString('yyyy-MM-dd')
-        $canalLinea = $p[2].Trim()
-        $durLinea = [double]$p[3]
-        $notaLinea = [int]$p[4]
-
-        if (($canalLinea -eq $canalGrupo) -and ($fechaLineaKey -eq $fechaGrupoKey)) {
-            $sumaDur += $durLinea
-            $sumaNota += $notaLinea
-            $cnt++
-        }
-        else {
-            $promDur = [math]::Round($sumaDur / $cnt, 2)
-            $promNota = [math]::Round($sumaNota / $cnt, 2)
-
-            $resultados += [PSCustomObject]@{
-                fecha                      = $fechaGrupoKey
-                canal                      = $canalGrupo
-                tiempo_respuesta_promedio  = $promDur
-                nota_satisfaccion_promedio = $promNota
-                cantidad                   = $cnt
-            }
-
-            # Reiniciar grupo
-            $fechaGrupo = $fechaLinea
-            $fechaGrupoKey = $fechaLineaKey
-            $canalGrupo = $canalLinea
-            $sumaDur = $durLinea
-            $sumaNota = $notaLinea
-            $cnt = 1
-        }
+    if (-not $json.ContainsKey($fecha)) { $json[$fecha] = @{} }
+    $json[$fecha][$canal] = @{
+      tiempo_respuesta_promedio  = $promDur
+      nota_satisfaccion_promedio = $promNota
     }
+  }
 
-    # === Último grupo ===
-    $promDur = [math]::Round($sumaDur / $cnt, 2)
-    $promNota = [math]::Round($sumaNota / $cnt, 2)
-    $resultados += [PSCustomObject]@{
-        fecha                      = $fechaGrupoKey
-        canal                      = $canalGrupo
-        tiempo_respuesta_promedio  = $promDur
-        nota_satisfaccion_promedio = $promNota
-        cantidad                   = $cnt
+  if ($pantalla) {
+    $jsonStr = $json | ConvertTo-Json -Depth 5
+    Write-Output $jsonStr
+  }
+  else {
+    $outputDir = (Resolve-Path -Path $archivo -ErrorAction Stop).Path
+    if (-not (Test-Path -Path $outputDir -PathType Container)) {
+      throw "La ruta '$outputDir' no es un directorio válido."
     }
-
-    # === Salida ===
-    if ($pantalla) {
-        foreach ($r in $resultados) {
-            Write-Host "Subtotal para '$($r.canal)' Fecha=$($r.fecha)"
-            Write-Host "  Promedio Tiempo de Respuesta: $($r.tiempo_respuesta_promedio)"
-            Write-Host "  Promedio Nota Satisfacción:   $($r.nota_satisfaccion_promedio)"
-            Write-Host "  Cantidad de registros:        $($r.cantidad)"
-            Write-Host ""
-        }
-        Write-Output ($resultados | ConvertTo-Json -Depth 5)
-    }
-    else {
-        $outputDir = (Resolve-Path -Path $archivo -ErrorAction Stop).Path
-        if (-not (Test-Path -Path $outputDir -PathType Container)) {
-            throw "La ruta '$outputDir' no es un directorio válido."
-        }
-        $fileName = "analisis-resultado-encuestas-$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').json"
-        $path = Join-Path $outputDir $fileName
-        ($resultados | ConvertTo-Json -Depth 5) | Out-File -FilePath $path -Encoding UTF8
-        Write-Host "Archivo generado: $path" -ForegroundColor Green
-    }
+    $fileName = "analisis-resultado-encuestas-$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').json"
+    $path = Join-Path $outputDir $fileName
+    ($json | ConvertTo-Json -Depth 5) | Out-File -FilePath $path -Encoding UTF8
+    Write-Host "Archivo generado: $path" -ForegroundColor Green
+  }
 }
 catch {
-    Write-Host "Hubo un error: $($_.Exception.Message)" -ForegroundColor Red
+  Write-Host "Hubo un error: $($_.Exception.Message)" -ForegroundColor Red
 }
