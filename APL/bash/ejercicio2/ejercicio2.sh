@@ -47,12 +47,33 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -m|--matriz) MAPA="$2"; shift 2;;
     -s|--separador) SEP="$2"; shift 2;;
-    -h|--hub) MODO="hub"; shift;;
-    -c|--camino) MODO="camino"; shift;;
+	-h|--hub)
+	  if [[ -n "$MODO" && "$MODO" != "hub" ]]; then
+		echo "Error: No se pueden usar las opciones -h (--hub) y -c (--camino) al mismo tiempo."
+		exit 1
+	  fi
+	  MODO="hub"
+	  shift
+	  ;;
+	-c|--camino)
+	  if [[ -n "$MODO" && "$MODO" != "camino" ]]; then
+		echo "Error: No se pueden usar las opciones -h (--hub) y -c (--camino) al mismo tiempo."
+		exit 1
+	  fi
+	  MODO="camino"
+	  shift
+	  ;;
     --help) mostrar_ayuda; exit 0;;
     *) echo "Parámetro inválido: $1"; exit 1;;
   esac
 done
+
+# --- validación: no se pueden usar -h y -c al mismo tiempo ---
+if [[ "$@" == *"-h"* && "$@" == *"-c"* ]] || [[ "$@" == *"--hub"* && "$@" == *"--camino"* ]]; then
+  echo "Error: No se pueden usar las opciones -h (--hub) y -c (--camino) al mismo tiempo."
+  echo "Debe elegir solo una de ellas."
+  exit 1
+fi
 
 if [[ -z "$MAPA" ]]; then
   echo "Error: Debe indicar archivo con -m"
