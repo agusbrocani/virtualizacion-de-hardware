@@ -1,79 +1,79 @@
-./ejercicio2.sh -m ./Lotes/mapa1.txt -s "|" -c
+./ejercicio2.ps1 -Mapa ./Lotes/mapa1.txt -Sep "|" -Camino
 
 para ver el resultado:
 cat informe.mapa1.txt
 
-./ejercicio2.sh -m ./Lotes/mapa1.txt -s "|" -h
+./ejercicio2.ps1 -Mapa ./Lotes/mapa1.txt -Sep "|" -Hub
 
 para ver el resultado:
 cat informe.mapa1.txt
 
-./ejercicio2.sh -m ./Lotes/mapa2.txt -s "|" -c
+./ejercicio2.ps1 -Mapa ./Lotes/mapa2.txt -Sep "|" -Camino
 
 para ver el resultado:
 cat informe.mapa2.txt
 
-./ejercicio2.sh -m ./Lotes/mapa2.txt -s "|" -h
+./ejercicio2.ps1 -Mapa ./Lotes/mapa2.txt -Sep "|" -Hub
 
 para ver el resultado:
 cat informe.mapa2.txt
 
-./ejercicio2.sh -m ./Lotes/mapa3.txt -s "|" -c
+./ejercicio2.ps1 -Mapa ./Lotes/mapa3.txt -Sep "|" -Camino
 
 para ver el resultado:
 cat informe.mapa3.txt
 
-./ejercicio2.sh -m ./Lotes/mapa3.txt -s "|" -h
+./ejercicio2.ps1 -Mapa ./Lotes/mapa3.txt -Sep "|" -Hub
 
 para ver el resultado:
 cat informe.mapa3.txt
 
-./ejercicio2.sh -m ./Lotes/mapa4.txt -s "|" -c
+./ejercicio2.ps1 -Mapa ./Lotes/mapa4.txt -Sep "|" -Camino
 
 para ver el resultado:
 cat informe.mapa4.txt
 
-./ejercicio2.sh -m ./Lotes/mapa4.txt -s "|" -h
+./ejercicio2.ps1 -Mapa ./Lotes/mapa4.txt -Sep "|" -Hub
 
 para ver el resultado:
 cat informe.mapa4.txt
 
-./ejercicio2.sh -m ./Lotes/mapa5.txt -s "|" -c
+./ejercicio2.ps1 -Mapa ./Lotes/mapa5.txt -Sep "|" -Camino
 
 para ver el resultado:
 cat informe.mapa5.txt
 
-./ejercicio2.sh -m ./Lotes/mapa5.txt -s "|" -h
+./ejercicio2.ps1 -Mapa ./Lotes/mapa5.txt -Sep "|" -Hub
 
 para ver el resultado:
 cat informe.mapa5.txt
 
-./ejercicio2.sh -m ./Lotes/mapa6.txt -s "|" -c
+./ejercicio2.ps1 -Mapa ./Lotes/mapa6.txt -Sep "|" -Camino
 
 para ver el resultado:
 cat informe.mapa6.txt
 
-./ejercicio2.sh -m ./Lotes/mapa6.txt -s "|" -h
+./ejercicio2.ps1 -Mapa ./Lotes/mapa6.txt -Sep "|" -Hub
 
 para ver el resultado:
 cat informe.mapa6.txt
 
-./ejercicio2.sh -m ./Lotes/mapa7.txt -s "|" -c
+./ejercicio2.ps1 -Mapa ./Lotes/mapa7.txt -Sep "|" -Camino
 
 para ver el resultado:
 cat informe.mapa7.txt
 
-./ejercicio2.sh -m ./Lotes/mapa7.txt -s "|" -h
+./ejercicio2.ps1 -Mapa ./Lotes/mapa7.txt -Sep "|" -Hub
 
 para ver el resultado:
 cat informe.mapa7.txt
 
-./ejercicio2.sh -m ./Lotes/mapa8.txt -s "|" -c
+./ejercicio2.ps1 -Mapa ./Lotes/mapa8.txt -Sep "|" -Camino
 
 para ver el resultado:
 cat informe.mapa8.txt
 
-./ejercicio2.sh -m ./Lotes/mapa8.txt -s "|" -h
+./ejercicio2.ps1 -Mapa ./Lotes/mapa8.txt -Sep "|" -Hub
 
 para ver el resultado:
 cat informe.mapa8.txt
