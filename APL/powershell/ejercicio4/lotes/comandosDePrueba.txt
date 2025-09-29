@@ -1,0 +1,7 @@
+Para probar este script, tenes que: 
+
+1- ejecutar el script
+    ./ejercicio4.ps1 -log "./security.log" -configuracion "./lotes/patrones.conf" -repo "../../../"
+2- modificar el archivo "modificarParaDetectarCambios.txt" poniendo alguna palabra/patrón que esté en el archivo patrones.conf
+3- realizar un ' git add . ' y un ' git commit -m "nuevo" '
+4- se va a generar el archivo security.log y dentro contendrá la actividad registrada
