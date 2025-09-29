@@ -120,7 +120,6 @@ catch {
     throw "Error al convertir rutas a absolutas: $_"
 }
 
-
 function Invoke-DaemonProcess {
     [CmdletBinding()]
     param(
@@ -163,7 +162,6 @@ function Invoke-DaemonProcess {
             
             # Construir argumentos para el proceso en background
             $argumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$scriptPath`"")
-            # Para debugging: agregar '-NoExit' para mantener ventana abierta
             
             # Agregar parámetros originales del script
             foreach ($key in $Parameters.Keys) {
@@ -356,7 +354,6 @@ function Start-GitSecurityWatcher {
         $watcher.Filter = "*"
         $watcher.NotifyFilter = [System.IO.NotifyFilters]::LastWrite -bor [System.IO.NotifyFilters]::FileName
         
-        # Enfoque simplificado: usar archivos temporales para pasar información al evento
         $configFile = Join-Path $env:TEMP "git-security-config-$PID.json"
         $config = @{
             RepositoryPath = $RepositoryPath
@@ -381,7 +378,7 @@ function Start-GitSecurityWatcher {
                     
                     Write-Verbose "Cambio detectado en: $changedFile"
                     
-                    # DEBOUNCE MECHANISM MEJORADO: Evitar procesamiento duplicado basado en commit hash
+                    # DEBOUNCE: Evitar procesamiento duplicado basado en commit hash
                     # Usar el PID específico del demonio actual en lugar de buscar todos los archivos
                     $configFile = "$env:TEMP\git-security-config-$PID.json"
                     if (-not (Test-Path $configFile)) {
@@ -458,7 +455,6 @@ function Start-GitSecurityWatcher {
                         return
                     }
                     
-                    # DEBUG: Verificar directamente git diff-tree (solo en modo verbose)
                     Write-Verbose "DEBUG: Ejecutando git diff-tree directamente..."
                     Push-Location $repoPath
                     $gitOutput = git diff-tree --no-commit-id --name-only -r HEAD 2>$null
@@ -518,7 +514,7 @@ function Start-GitSecurityWatcher {
             catch {
                 Write-Verbose "Error durante limpieza en PowerShell.Exiting: $_"
             }
-        } | Out-Null # Evitar salida en consola
+        } | Out-Null
         
         Write-Host "Demonio de seguridad activo. Monitoreando cambios en: $gitPath" -ForegroundColor Green
         Write-Host "Archivo de log: $LogPath" -ForegroundColor Gray
@@ -530,7 +526,6 @@ function Start-GitSecurityWatcher {
         $counter = 0
         try {
             while ($true) {
-                # Esto es para que no se consuma CPU innecesariamente. Hacemos un sleep largo
                 Start-Sleep -Seconds 10
                 $counter++
                 
@@ -549,7 +544,6 @@ function Start-GitSecurityWatcher {
             Write-Verbose "Detalles del error: $($_.Exception.Message)"
             Write-Verbose "StackTrace: $($_.ScriptStackTrace)"
             
-            # El demonio se detendrá, pero con información de diagnóstico
             throw $_ # Re-propagar para que el catch externo también lo maneje
         }
         finally {
@@ -741,10 +735,7 @@ function Write-SecurityAlert {
             New-Item -Path $parentDir -ItemType Directory -Force | Out-Null
         }
         
-        # Escribir al log
         Add-Content -Path $LogPath -Value $logEntry -Encoding UTF8
-        
-        # También mostrar en consola para feedback inmediato
         Write-Host $logEntry -ForegroundColor Red
         
         Write-Verbose "Alerta escrita al log: $LogPath"
@@ -755,7 +746,6 @@ function Write-SecurityAlert {
 }
 
 function Clear-DaemonTempFiles {
-    # Limpia archivos temporales huérfanos del demonio
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -763,7 +753,7 @@ function Clear-DaemonTempFiles {
         [Parameter(Mandatory = $true)]
         [string]$nombreRepo,
         [Parameter(Mandatory = $false)]
-        [switch]$Force  # Forzar limpieza de todos los archivos, incluso de demonios activos
+        [switch]$Force
     )
 
     try {
@@ -816,7 +806,6 @@ function Clear-DaemonTempFiles {
             }
         }
         
-        # Limpiar archivos de commits procesados
         foreach ($file in $processedFiles) {
             $pidFromFile = $file.BaseName.Split('-')[-1]
             if ($Force -or $pidFromFile -notin $activePids) {
@@ -829,7 +818,6 @@ function Clear-DaemonTempFiles {
             }
         }
         
-        # Limpiar archivos PID (solo los huérfanos)
         foreach ($file in $pidFiles) {
             try {
                 $pid = Get-Content $file.FullName -ErrorAction Stop
@@ -844,7 +832,6 @@ function Clear-DaemonTempFiles {
                 }
             }
             catch {
-                # Archivo PID huérfano (proceso no existe)
                 Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
                 Write-Host "  Eliminado: $($file.Name) (proceso no existe)" -ForegroundColor Green
                 $cleanedCount++
@@ -893,7 +880,6 @@ try {
             Start-GitSecurityWatcher -RepositoryPath $repo -SecurityPatterns $patterns -LogPath $log
         }
         else {
-            # Usar el cmdlet personalizado para lanzar en background
             Invoke-DaemonProcess -Action $daemonAction -Parameters $daemonParameters -RepositoryPath $repo -DaemonName "Git Security Monitor" -IsDaemonMode $false
             exit 0
         }
