@@ -263,3 +263,4 @@ else
   # El HIJO NO se auto-bloquea: entra directo al loop
   daemon_loop
 fi
+
