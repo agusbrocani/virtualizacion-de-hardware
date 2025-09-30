@@ -36,7 +36,8 @@ to_abs_path() {
   fi
 }
 canon_repo() { # normaliza a la RAÍZ real del repo
-  local p="$(to_abs_path "$1")"
+  local p
+  p="$(to_abs_path "$1")"
   ( cd "$p" && git rev-parse --show-toplevel 2>/dev/null ) || ( cd "$p" && pwd -P )
 }
 hash_repo_path(){ echo -n "$1" | md5sum | awk '{print $1}'; }
@@ -44,7 +45,8 @@ hash_repo_path(){ echo -n "$1" | md5sum | awk '{print $1}'; }
 # Devuelve PIDs de este script cuyo cmdline contiene --repo/-r con la misma ruta (con y sin / final)
 find_daemon_pids_by_repo() {
   local n="${REPO%/}"           # sin barra final
-  local script="$(basename "$0")"
+  local script
+  script="$(basename "$0")"
   ps -eo pid=,args= | awk -v script="$script" -v n="$n" 'index($0, script) && (index($0, "--repo " n) || index($0, "-r " n) || index($0, "--repo " n "/") || index($0, "-r " n "/")) {print $1}'
 }
 
@@ -177,7 +179,8 @@ daemon_loop() {
   [[ -e "$packed_refs" ]] && watch_targets+=("$packed_refs")
   ((${#watch_targets[@]}==0)) && watch_targets+=("$REPO/.git")
 
-  local last_commit="$(get_head_commit)"
+  local last_commit
+  last_commit="$(get_head_commit)"
 
   log_line "$(printf "[%s] Patrones cargados: %d simples, %d regex" \
     "$(timestamp)" "${#PATTERNS_FIXED[@]}" "${#PATTERNS_REGEX[@]}")"
@@ -185,7 +188,8 @@ daemon_loop() {
 
   while :; do
     inotifywait -q -e modify,attrib,close_write,move,create,delete --timeout "$INTERVAL" "${watch_targets[@]}" 2>/dev/null || sleep "$INTERVAL"
-    local current_commit="$(get_head_commit)"
+    local current_commit
+    current_commit="$(get_head_commit)"
     if [[ "$current_commit" != "$last_commit" ]]; then
       mapfile -t changed < <(get_changed_files_since "$last_commit" || true)
       if ((${#changed[@]} > 0)); then
