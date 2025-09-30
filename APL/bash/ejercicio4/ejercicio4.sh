@@ -35,7 +35,18 @@ to_abs_path() {
     (cd -- "$dir" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base") || printf '%s\n' "$p"
   fi
 }
+canon_repo() { # normaliza a la RAÍZ real del repo
+  local p="$(to_abs_path "$1")"
+  ( cd "$p" && git rev-parse --show-toplevel 2>/dev/null ) || ( cd "$p" && pwd -P )
+}
 hash_repo_path(){ echo -n "$1" | md5sum | awk '{print $1}'; }
+
+# Devuelve PIDs de este script cuyo cmdline contiene --repo/-r con la misma ruta (con y sin / final)
+find_daemon_pids_by_repo() {
+  local n="${REPO%/}"           # sin barra final
+  local script="$(basename "$0")"
+  ps -eo pid=,args= | awk -v script="$script" -v n="$n" 'index($0, script) && (index($0, "--repo " n) || index($0, "-r " n) || index($0, "--repo " n "/") || index($0, "-r " n "/")) {print $1}'
+}
 
 # ---------- Dependencias (EXIGE grep -P para PCRE) ----------
 check_dependencies() {
@@ -47,13 +58,11 @@ check_dependencies() {
     log_error "CentOS/RHEL:   sudo yum install -y inotify-tools jq grep git"
     exit 1
   fi
-  # PCRE requerido para regex avanzadas (\b, (?:...), lookarounds, etc.)
   if ! grep -P "" <<<"" >/dev/null 2>&1; then
     log_error "Tu 'grep' no soporta -P (PCRE). Es obligatorio para las regex del config."
     log_error "Instalá GNU grep con soporte PCRE. En Ubuntu/Debian: sudo apt install -y grep"
     exit 1
   fi
-  # flock es opcional (atomicidad del log)
   command -v flock >/dev/null 2>&1 || log_warn "flock no encontrado: el log podría intercalar líneas bajo concurrencia."
 }
 
@@ -65,11 +74,7 @@ get_changed_files_since(){ local since="$1"; (cd "$REPO" && git diff --name-only
 # ---------- Patrones ----------
 declare -a PATTERNS_FIXED=() PATTERNS_REGEX=()
 
-_trim_ws_and_cr() { # quita CR y espacios/tabs a ambos lados
-  local s="$1"
-  s="${s%$'\r'}"; s="${s#"${s%%[!$' \t']*}"}"; s="${s%"${s##*[!$' \t']}"}"
-  printf '%s' "$s"
-}
+_trim_ws_and_cr() { local s="$1"; s="${s%$'\r'}"; s="${s#"${s%%[!$' \t']*}"}"; s="${s%"${s##*[!$' \t']}"}"; printf '%s' "$s"; }
 
 load_patterns() {
   local cfg="$1"; [[ -f "$cfg" ]] || { log_error "Archivo de configuración no existe: $cfg"; exit 1; }
@@ -93,7 +98,6 @@ LOG_LOCKFILE=""
 log_line() {
   local line="$1"
   if command -v flock >/dev/null 2>&1; then
-    # uso de $1/$2 dentro del subshell para evitar SC2016 y asegurar atomicidad
     flock -x "$LOG_LOCKFILE" bash -c "printf '%s\n' \"\$1\" >> \"\$2\"" _ "$line" "$LOGFILE"
   else
     printf "%s\n" "$line" >> "$LOGFILE"
@@ -107,20 +111,15 @@ log_alert(){ # $1=patrón $2=archivo_rel $3=nro_linea $4=Tipo
 # ---------- Regex (PCRE obligatorio) ----------
 _grep_regex() {
   local pattern="$1" file="$2"
-  # -P: PCRE; -i: case-insensitive; -n: número de línea; -I: omite binarios; --no-filename: suprime ruta
-  LC_ALL=C grep -I -n -i -P --no-filename -- "$pattern" -- "$file" 2>/dev/null || true
+  LC_ALL=C sed 's/\r$//' "$file" | grep -n -i -P --no-filename -- "$pattern" 2>/dev/null || true
 }
 
 # Extrae el número de línea desde la salida de grep -n (robusto ante "ruta:...:N:...")
 extract_lineno() {
   local hit="$1"
-  if [[ "$hit" =~ ^([0-9]+): ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]}"; return 0
-  fi
+  if [[ "$hit" =~ ^([0-9]+): ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; return 0; fi
   local before="${hit%:*}"; local ln="${before##*:}"
-  if [[ ! "$ln" =~ ^[0-9]+$ ]]; then
-    ln="$(grep -oE '(^|:)[0-9]+(:|$)' <<<"$hit" | head -n1 | tr -d ':')"
-  fi
+  if [[ ! "$ln" =~ ^[0-9]+$ ]]; then ln="$(grep -oE '(^|:)[0-9]+(:|$)' <<<"$hit" | head -n1 | tr -d ':')"; fi
   printf '%s\n' "$ln"
 }
 
@@ -134,27 +133,23 @@ scan_file_patterns() {
   [[ -f "$abs_path" ]] || { log_warn "Archivo no encontrado: $rel_path"; return 0; }
 
   # Omitir binarios
-  if ! LC_ALL=C grep -Iq . -- "$abs_path"; then
-    return 0
-  fi
+  if ! LC_ALL=C grep -Iq . -- "$abs_path"; then return 0; fi
 
-  # Simples (literal, case-insensitive). Forzamos --no-filename y aún así parseamos por si algún alias mete ruta.
+  # Simples (literal, case-insensitive) con normalización CRLF
   local pat pat_clean
   for pat in "${PATTERNS_FIXED[@]}"; do
-    pat_clean="$(_trim_ws_and_cr "$pat")"
-    [[ -n "$pat_clean" ]] || continue
+    pat_clean="$(_trim_ws_and_cr "$pat")"; [[ -n "$pat_clean" ]] || continue
     while IFS= read -r hit; do
       [[ -z "$hit" ]] && continue
       local ln; ln="$(extract_lineno "$hit")"
       [[ -n "$ln" ]] && log_alert "$pat_clean" "$rel_path" "$ln" "Simple"
-    done < <(LC_ALL=C grep -I -n -F -i --no-filename -- "$pat_clean" -- "$abs_path" 2>/dev/null || true)
+    done < <(LC_ALL=C sed 's/\r$//' "$abs_path" | grep -n -F -i --no-filename -- "$pat_clean" 2>/dev/null || true)
   done
 
   # Regex (PCRE)
   local rx rx_clean
   for rx in "${PATTERNS_REGEX[@]}"; do
-    rx_clean="$(_trim_ws_and_cr "$rx")"
-    [[ -n "$rx_clean" ]] || continue
+    rx_clean="$(_trim_ws_and_cr "$rx")"; [[ -n "$rx_clean" ]] || continue
     while IFS= read -r hit; do
       [[ -z "$hit" ]] && continue
       local ln; ln="$(extract_lineno "$hit")"
@@ -164,21 +159,12 @@ scan_file_patterns() {
 }
 
 # ---------- Limpieza ----------
-cleanup() {
-  local code=$?
-  log_info "Limpiando recursos (PID $$, código $code)..."
-  [[ -f "$PIDFILE" ]] && rm -f "$PIDFILE"
-  [[ -f "$STATEFILE" ]] && rm -f "$STATEFILE"
-  [[ -n "${LOG_LOCKFILE:-}" && -f "$LOG_LOCKFILE" ]] && rm -f "$LOG_LOCKFILE"
-  exit $code
-}
+cleanup() { local code=$?; [[ -n "${LOG_LOCKFILE:-}" && -f "$LOG_LOCKFILE" ]] && rm -f "$LOG_LOCKFILE"; exit $code; }
 trap cleanup EXIT INT TERM ERR
 
 # ---------- Daemon ----------
 INTERVAL=5
 daemon_loop() {
-  echo $$ > "$PIDFILE"
-
   local branch=""
   if branch_exists main; then branch="main"
   elif branch_exists master; then branch="master"
@@ -186,26 +172,28 @@ daemon_loop() {
 
   local head_file="$REPO/.git/refs/heads/$branch"
   local packed_refs="$REPO/.git/packed-refs"
-  local last_commit="$(get_head_commit)"; echo "$last_commit" > "$STATEFILE"
+  local -a watch_targets=()
+  [[ -e "$head_file" ]] && watch_targets+=("$head_file")
+  [[ -e "$packed_refs" ]] && watch_targets+=("$packed_refs")
+  ((${#watch_targets[@]}==0)) && watch_targets+=("$REPO/.git")
+
+  local last_commit="$(get_head_commit)"
 
   log_line "$(printf "[%s] Patrones cargados: %d simples, %d regex" \
     "$(timestamp)" "${#PATTERNS_FIXED[@]}" "${#PATTERNS_REGEX[@]}")"
-  log_info "Monitoreando $REPO (rama $branch) | log: $LOGFILE | PID: $$"
+  log_info "Monitoreando $REPO (rama $branch) | log: $LOGFILE"
 
   while :; do
-    inotifywait -q -e modify,attrib,close_write,move,create,delete --timeout "$INTERVAL" "$head_file" "$packed_refs" 2>/dev/null \
-      || sleep "$INTERVAL"
+    inotifywait -q -e modify,attrib,close_write,move,create,delete --timeout "$INTERVAL" "${watch_targets[@]}" 2>/dev/null || sleep "$INTERVAL"
     local current_commit="$(get_head_commit)"
     if [[ "$current_commit" != "$last_commit" ]]; then
       mapfile -t changed < <(get_changed_files_since "$last_commit" || true)
       if ((${#changed[@]} > 0)); then
         log_line "$(printf "[%s] Detectados %d archivos modificados en %s..%s" \
           "$(timestamp)" "${#changed[@]}" "${last_commit:0:7}" "${current_commit:0:7}")"
-        for f in "${changed[@]}"; do
-          scan_file_patterns "$f"
-        done
+        for f in "${changed[@]}"; do scan_file_patterns "$f"; done
       fi
-      last_commit="$current_commit"; echo "$last_commit" > "$STATEFILE"
+      last_commit="$current_commit"
     fi
   done
 }
@@ -214,7 +202,7 @@ daemon_loop() {
 REPO=""; CONFIG=""; LOGFILE=""; KILL_MODE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -r|--repo)            REPO="$(to_abs_path "${2:-}")"; shift 2;;
+    -r|--repo)            REPO="$(canon_repo "${2:-}")"; shift 2;;
     -c|--configuracion)   CONFIG="$(to_abs_path "${2:-}")"; shift 2;;
     -l|--log)             LOGFILE="$(to_abs_path "${2:-}")"; shift 2;;
     -k|--kill)            KILL_MODE=1; shift;;
@@ -223,31 +211,32 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -z "$REPO" ]] && { log_error "Debe indicar -r/--repo <ruta ABSOLUTA al repo>"; exit 1; }
+[[ -z "$REPO" ]] && { log_error "Debe indicar -r/--repo <ruta al repo>"; exit 1; }
+REPO="$(canon_repo "$REPO")"
 [[ -d "$REPO/.git" ]] || { log_error "No parece un repo Git: $REPO"; exit 1; }
 
+# Derivados
 repo_hash="$(hash_repo_path "$REPO")"
-PIDFILE="/tmp/audit-${repo_hash}.pid"
-STATEFILE="/tmp/audit-${repo_hash}.state"
-LOG_LOCKFILE="/tmp/audit-${repo_hash}.lock"
 [[ -z "${LOGFILE:-}" ]] && LOGFILE="$REPO/.git/audit.log"
+LOG_LOCKFILE="/tmp/audit-${repo_hash}.lock"
+: > "$LOG_LOCKFILE"
 
-# Kill mode (solo -r + -k)
+# --- Kill mode (solo -r + -k) ---
 if (( KILL_MODE )); then
   if [[ -n "${CONFIG:-}" || ( -n "${LOGFILE:-}" && "$LOGFILE" != "$REPO/.git/audit.log" ) ]]; then
     log_error "Con -k/--kill solo se permite -r/--repo. No use -c/--configuracion ni -l/--log."
     exit 1
   fi
-  if [[ -f "$PIDFILE" ]]; then
-    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      log_info "Deteniendo daemon (PID $pid)..."; kill -TERM "$pid" 2>/dev/null || true
-    else
-      log_warn "PID inválido u offline."
-    fi
-  else
+  mapfile -t pids < <(find_daemon_pids_by_repo)
+  if ((${#pids[@]} == 0)); then
     log_warn "No hay daemon corriendo para este repo."
+  else
+    log_info "Deteniendo por cmdline: ${pids[*]}"
+    for p in "${pids[@]}"; do kill -TERM "$p" 2>/dev/null || true; done
+    sleep 1
+    for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null || true; done
   fi
+  rm -f "$LOG_LOCKFILE" 2>/dev/null || true
   exit 0
 fi
 
@@ -256,23 +245,17 @@ check_dependencies
 [[ -f "$CONFIG" ]] || { log_error "Archivo de configuración no existe: $CONFIG"; exit 1; }
 load_patterns "$CONFIG"
 
-# Evitar múltiples instancias
-if [[ -f "$PIDFILE" ]]; then
-  oldpid="$(cat "$PIDFILE" 2>/dev/null || true)"
-  if [[ -n "$oldpid" ]] && kill -0 "$oldpid" 2>/dev/null; then
-    log_error "Ya hay un daemon para este repo (PID $oldpid)."; exit 1
-  fi
-fi
-
-mkdir -p -- "$(dirname "$LOGFILE")"; touch -- "$LOGFILE"
-: > "$LOG_LOCKFILE"
-
-# Daemonizar
+# SOLO el PADRE chequea duplicados (antes de daemonizar)
 if [[ "${DAEMON_MODE:-0}" != "1" ]]; then
+  mapfile -t running < <(find_daemon_pids_by_repo)
+  if ((${#running[@]} > 0)); then
+    log_error "Ya hay un daemon para este repo (PIDs: ${running[*]})."; exit 1
+  fi
+  # Daemonizar
   nohup env DAEMON_MODE=1 "$0" -r "$REPO" -c "$CONFIG" -l "$LOGFILE" >/dev/null 2>&1 &
-  echo $! > "$PIDFILE"
-  log_info "Daemon iniciado en segundo plano (PID $(cat "$PIDFILE"))"
+  log_info "Daemon iniciado en segundo plano."
   exit 0
 else
+  # El HIJO NO se auto-bloquea: entra directo al loop
   daemon_loop
 fi
