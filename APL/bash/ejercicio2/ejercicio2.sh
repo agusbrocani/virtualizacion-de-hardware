@@ -28,7 +28,7 @@
 #   --help          Muestra esta ayuda
 #
 # EJEMPLOS:
-#   ./ejercicio2.sh -m mapa.txt -h
+#   ./ejercicio2.sh -m mapa.txt -s "|" -h
 #   ./ejercicio2.sh -m mapa.txt -s "," -c
 
 mostrar_ayuda() {
@@ -266,7 +266,7 @@ camino() {
     for nodo in $p; do
       ruta+=($((nodo+1)))
     done
-    echo "  Ruta: ${ruta[*]}"
+    echo "  Ruta: $(IFS=' '; echo "${ruta[*]}" | sed 's/ /->/g')"
   done
   return 0
 }

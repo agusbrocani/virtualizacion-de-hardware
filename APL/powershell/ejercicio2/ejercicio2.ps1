@@ -25,10 +25,10 @@
     hubs o caminos óptimos, con modo de depuración opcional.
 
 .PARAMETER Mapa
-    Ruta al archivo de texto que contiene la matriz de costos. Por defecto, "mapa.txt".
+    Ruta al archivo de texto que contiene la matriz de costos.
 
 .PARAMETER Sep
-    Carácter separador usado en el archivo de matriz. Por defecto, "|".
+    Carácter separador usado en el archivo de matriz.
 
 .PARAMETER Hub
     Indica si se debe calcular el análisis de hubs (nodos centrales).
@@ -288,7 +288,7 @@ if ($Camino) {
         foreach ($ruta in $script:MejoresRutasGlobal) {
             # ajustar a base 1 si tu matriz es base 0
             $rutaBase1 = $ruta | ForEach-Object { $_ + 1 }
-            $contenido += "Ruta: $($rutaBase1 -join ' ')`n"
+            $contenido += "Ruta: $($rutaBase1 -join '->')`n"
         }
     }
 }
