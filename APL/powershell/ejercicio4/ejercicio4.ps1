@@ -40,7 +40,7 @@
 
 .EXAMPLE
     Iniciar el demonio para monitorear el repositorio actual con configuración por defecto.
-    .\ejercicio4.ps1 -repo C:\mi-proyecto -configuracion .\resources\patrones.conf -log .\security.log
+    .\ejercicio4.ps1 -repo C:\mi-proyecto -configuracion .\lotes\patrones.conf -log .\security.log
 
 .EXAMPLE
     Detener el demonio activo para un repositorio específico.
@@ -79,16 +79,12 @@ param(
         if (-not (Test-Path $_ -PathType Leaf)) {
             throw "El archivo de configuración '$_' no existe."
         }
-        
-        # Leer el archivo y filtrar líneas válidas (no vacías, no comentarios)
         $validPatterns = Get-Content $_ | Where-Object { 
             $_.Trim() -ne '' -and -not $_.Trim().StartsWith('#') 
         }
-        
         if ($validPatterns.Count -eq 0) {
             throw "El archivo de configuración '$_' no contiene patrones válidos. Debe tener al menos una entrada."
         }
-        
         return $true
     })]
     [string]$configuracion,
@@ -107,8 +103,22 @@ param(
     [switch]$kill,
 
     [Parameter(Mandatory = $false)]
-    [switch]$__daemon  # Parámetro interno para ejecución en background
+    [switch]$__daemon
 )
+
+try {
+    $repo = (Resolve-Path -Path $repo -ErrorAction Stop).Path
+    $configuracion = (Resolve-Path -Path $configuracion -ErrorAction Stop).Path
+    # Para el log, puede ser un archivo aún no creado, se resuelve el directorio padre
+    $logParent = Split-Path -Parent $log
+    if ($logParent) {
+        $logParentAbs = (Resolve-Path -Path $logParent -ErrorAction Stop).Path
+        $log = Join-Path $logParentAbs (Split-Path -Leaf $log)
+    }
+}
+catch {
+    throw "Error al convertir rutas a absolutas: $_"
+}
 
 function Invoke-DaemonProcess {
     [CmdletBinding()]
@@ -152,7 +162,6 @@ function Invoke-DaemonProcess {
             
             # Construir argumentos para el proceso en background
             $argumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$scriptPath`"")
-            # Para debugging: agregar '-NoExit' para mantener ventana abierta
             
             # Agregar parámetros originales del script
             foreach ($key in $Parameters.Keys) {
@@ -295,7 +304,9 @@ function Stop-GitSecurityDaemon {
         
         # Ejecutar limpieza antes de detener el proceso
         Write-Host "Ejecutando limpieza de archivos temporales..." -ForegroundColor Yellow
-        Clear-DaemonTempFiles -Force:$false
+
+        $nombreRepo = ($RepositoryPath -replace '[\\/:*?"<>|]', '_').ToLower()
+        Clear-DaemonTempFiles -Force:$false -pIdDemonio $processId -nombreRepo $nombreRepo
         
         Stop-Process -Id $processId -Force
         
@@ -325,9 +336,6 @@ function Start-GitSecurityWatcher {
         [string]$LogPath
     )
     
-    # NOTA: No verificamos demonio corriendo aquí porque esta función 
-    # se llama tanto desde el proceso padre como desde el proceso demonio
-    
     try {
         # Crear archivo PID y lo guardo en el file del PID
         $pidFile = Get-PidFilePath -RepositoryPath $RepositoryPath
@@ -346,7 +354,6 @@ function Start-GitSecurityWatcher {
         $watcher.Filter = "*"
         $watcher.NotifyFilter = [System.IO.NotifyFilters]::LastWrite -bor [System.IO.NotifyFilters]::FileName
         
-        # Enfoque simplificado: usar archivos temporales para pasar información al evento
         $configFile = Join-Path $env:TEMP "git-security-config-$PID.json"
         $config = @{
             RepositoryPath = $RepositoryPath
@@ -371,7 +378,7 @@ function Start-GitSecurityWatcher {
                     
                     Write-Verbose "Cambio detectado en: $changedFile"
                     
-                    # DEBOUNCE MECHANISM MEJORADO: Evitar procesamiento duplicado basado en commit hash
+                    # DEBOUNCE: Evitar procesamiento duplicado basado en commit hash
                     # Usar el PID específico del demonio actual en lugar de buscar todos los archivos
                     $configFile = "$env:TEMP\git-security-config-$PID.json"
                     if (-not (Test-Path $configFile)) {
@@ -448,7 +455,6 @@ function Start-GitSecurityWatcher {
                         return
                     }
                     
-                    # DEBUG: Verificar directamente git diff-tree (solo en modo verbose)
                     Write-Verbose "DEBUG: Ejecutando git diff-tree directamente..."
                     Push-Location $repoPath
                     $gitOutput = git diff-tree --no-commit-id --name-only -r HEAD 2>$null
@@ -508,7 +514,7 @@ function Start-GitSecurityWatcher {
             catch {
                 Write-Verbose "Error durante limpieza en PowerShell.Exiting: $_"
             }
-        } | Out-Null # Evitar salida en consola
+        } | Out-Null
         
         Write-Host "Demonio de seguridad activo. Monitoreando cambios en: $gitPath" -ForegroundColor Green
         Write-Host "Archivo de log: $LogPath" -ForegroundColor Gray
@@ -520,7 +526,6 @@ function Start-GitSecurityWatcher {
         $counter = 0
         try {
             while ($true) {
-                # Esto es para que no se consuma CPU innecesariamente. Hacemos un sleep largo
                 Start-Sleep -Seconds 10
                 $counter++
                 
@@ -539,7 +544,6 @@ function Start-GitSecurityWatcher {
             Write-Verbose "Detalles del error: $($_.Exception.Message)"
             Write-Verbose "StackTrace: $($_.ScriptStackTrace)"
             
-            # El demonio se detendrá, pero con información de diagnóstico
             throw $_ # Re-propagar para que el catch externo también lo maneje
         }
         finally {
@@ -547,7 +551,7 @@ function Start-GitSecurityWatcher {
             $watcher.EnableRaisingEvents = $false
             $watcher.Dispose()
             Get-EventSubscriber | Unregister-Event -ErrorAction SilentlyContinue
-            
+
             Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
             Write-Host "Demonio detenido y recursos liberados." -ForegroundColor Red
         }
@@ -731,10 +735,7 @@ function Write-SecurityAlert {
             New-Item -Path $parentDir -ItemType Directory -Force | Out-Null
         }
         
-        # Escribir al log
         Add-Content -Path $LogPath -Value $logEntry -Encoding UTF8
-        
-        # También mostrar en consola para feedback inmediato
         Write-Host $logEntry -ForegroundColor Red
         
         Write-Verbose "Alerta escrita al log: $LogPath"
@@ -745,29 +746,30 @@ function Write-SecurityAlert {
 }
 
 function Clear-DaemonTempFiles {
-    # Limpia archivos temporales huérfanos del demonio
     [CmdletBinding()]
     param(
+        [Parameter(Mandatory = $true)]
+        [string]$pIdDemonio,
+        [Parameter(Mandatory = $true)]
+        [string]$nombreRepo,
         [Parameter(Mandatory = $false)]
-        [switch]$Force  # Forzar limpieza de todos los archivos, incluso de demonios activos
+        [switch]$Force
     )
-    
+
     try {
         Write-Host "Iniciando limpieza de archivos temporales del demonio..." -ForegroundColor Yellow
         
         # Buscar todos los archivos temporales relacionados
-        $configFiles = Get-ChildItem "$env:TEMP\git-security-config-*.json" -ErrorAction SilentlyContinue
-        $processedFiles = Get-ChildItem "$env:TEMP\git-security-processed-*.json" -ErrorAction SilentlyContinue
-        $pidFiles = Get-ChildItem "$env:TEMP\git-security-daemon-*.pid" -ErrorAction SilentlyContinue
-        $debounceFiles = Get-ChildItem "$env:TEMP\git-security-debounce-*.tmp" -ErrorAction SilentlyContinue
+        $configFiles = Get-ChildItem "$env:TEMP\git-security-config-$pIdDemonio.json" -ErrorAction SilentlyContinue
+        $processedFiles = Get-ChildItem "$env:TEMP\git-security-processed-$pIdDemonio.json" -ErrorAction SilentlyContinue
+        $pidFiles = Get-ChildItem "$env:TEMP\git-security-daemon-$nombreRepo.pid" -ErrorAction SilentlyContinue
         
         Write-Host "Archivos temporales encontrados:" -ForegroundColor Cyan
         Write-Host "  • Configuración: $($configFiles.Count)" -ForegroundColor Gray
         Write-Host "  • Commits procesados: $($processedFiles.Count)" -ForegroundColor Gray
         Write-Host "  • Archivos PID: $($pidFiles.Count)" -ForegroundColor Gray
-        Write-Host "  • Archivos debounce obsoletos: $($debounceFiles.Count)" -ForegroundColor Gray
         
-        $totalFiles = $configFiles.Count + $processedFiles.Count + $pidFiles.Count + $debounceFiles.Count
+        $totalFiles = $configFiles.Count + $processedFiles.Count + $pidFiles.Count
         if ($totalFiles -eq 0) {
             Write-Host "No se encontraron archivos temporales para limpiar." -ForegroundColor Green
             return
@@ -781,7 +783,7 @@ function Clear-DaemonTempFiles {
                     $pid = Get-Content $pidFile.FullName -ErrorAction Stop
                     $process = Get-Process -Id $pid -ErrorAction Stop
                     $activePids += $pid
-                    Write-Host "  ⚠️  PID $pid está activo - archivos relacionados serán preservados" -ForegroundColor Yellow
+                    Write-Host "  PID $pid está activo - archivos relacionados serán preservados" -ForegroundColor Yellow
                 }
                 catch {
                     # PID no activo, se puede limpiar
@@ -796,54 +798,44 @@ function Clear-DaemonTempFiles {
             $pidFromFile = $file.BaseName.Split('-')[-1]
             if ($Force -or $pidFromFile -notin $activePids) {
                 Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
-                Write-Host "  ✓ Eliminado: $($file.Name)" -ForegroundColor Green
+                Write-Host "  Eliminado: $($file.Name)" -ForegroundColor Green
                 $cleanedCount++
             }
             else {
-                Write-Host "  → Preservado: $($file.Name) (demonio activo)" -ForegroundColor Yellow
+                Write-Host "  Preservado: $($file.Name) (demonio activo)" -ForegroundColor Yellow
             }
         }
         
-        # Limpiar archivos de commits procesados
         foreach ($file in $processedFiles) {
             $pidFromFile = $file.BaseName.Split('-')[-1]
             if ($Force -or $pidFromFile -notin $activePids) {
                 Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
-                Write-Host "  ✓ Eliminado: $($file.Name)" -ForegroundColor Green
+                Write-Host "  Eliminado: $($file.Name)" -ForegroundColor Green
                 $cleanedCount++
             }
             else {
-                Write-Host "  → Preservado: $($file.Name) (demonio activo)" -ForegroundColor Yellow
+                Write-Host "  Preservado: $($file.Name) (demonio activo)" -ForegroundColor Yellow
             }
         }
         
-        # Limpiar archivos PID (solo los huérfanos)
         foreach ($file in $pidFiles) {
             try {
                 $pid = Get-Content $file.FullName -ErrorAction Stop
                 $process = Get-Process -Id $pid -ErrorAction Stop
                 if ($Force) {
                     Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
-                    Write-Host "  ✓ Eliminado: $($file.Name) (forzado)" -ForegroundColor Green
+                    Write-Host "  Eliminado: $($file.Name) (forzado)" -ForegroundColor Green
                     $cleanedCount++
                 }
                 else {
-                    Write-Host "  → Preservado: $($file.Name) (proceso activo PID $pid)" -ForegroundColor Yellow
+                    Write-Host "  Preservado: $($file.Name) (proceso activo PID $pid)" -ForegroundColor Yellow
                 }
             }
             catch {
-                # Archivo PID huérfano (proceso no existe)
                 Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
-                Write-Host "  ✓ Eliminado: $($file.Name) (proceso no existe)" -ForegroundColor Green
+                Write-Host "  Eliminado: $($file.Name) (proceso no existe)" -ForegroundColor Green
                 $cleanedCount++
             }
-        }
-        
-        # Limpiar archivos debounce obsoletos (de versiones anteriores)
-        foreach ($file in $debounceFiles) {
-            Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
-            Write-Host "  ✓ Eliminado: $($file.Name) (obsoleto)" -ForegroundColor Green
-            $cleanedCount++
         }
         
         Write-Host "Limpieza completada: $cleanedCount archivos eliminados de $totalFiles encontrados." -ForegroundColor Green
@@ -888,7 +880,6 @@ try {
             Start-GitSecurityWatcher -RepositoryPath $repo -SecurityPatterns $patterns -LogPath $log
         }
         else {
-            # Usar el cmdlet personalizado para lanzar en background
             Invoke-DaemonProcess -Action $daemonAction -Parameters $daemonParameters -RepositoryPath $repo -DaemonName "Git Security Monitor" -IsDaemonMode $false
             exit 0
         }
