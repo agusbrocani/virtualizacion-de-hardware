@@ -17,7 +17,7 @@
 
 # ejercicio4.sh - Monitorea un repo Git (solo main/master) y escanea archivos modificados
 # buscando credenciales/datos sensibles (patrones simples + regex).
-# Flags PERMITIDOS: -r/--repo  -c/--configuracion  -l/--log  -k/--kill
+# Flags PERMITIDOS: -r/--repo  -c/--configuracion  -l/--log  -k/--kill  -h/--help
 set -euo pipefail
 
 # ---------- UI ----------
@@ -26,6 +26,40 @@ log_error(){ echo -e "${RED}[ERROR]${NC} $*" >&2; }
 log_info(){  echo -e "${GREEN}[INFO] ${NC}$*"; }
 log_warn(){  echo -e "${YELLOW}[WARN] ${NC}$*"; }
 timestamp(){ date +"%Y-%m-%d %H:%M:%S"; }
+
+# ---------- Help ----------
+show_help() {
+  cat <<'EOF'
+Uso:
+  Iniciar daemon:
+    ./ejercicio4.sh -r <ruta_repo> -c <patrones.conf> [-l <archivo_log>]
+    ./ejercicio4.sh --repo <ruta_repo> --configuracion <patrones.conf> [--log <archivo_log>]
+
+  Detener daemon:
+    ./ejercicio4.sh -r <ruta_repo> -k
+    ./ejercicio4.sh --repo <ruta_repo> --kill
+
+Flags permitidos:
+  -r, --repo            Ruta del repositorio Git a monitorear (se normaliza a la raíz del repo).
+  -c, --configuracion   Archivo de configuración con patrones (líneas simples o prefijo 'regex:').
+  -l, --log             Archivo de log (por defecto: <repo>/.git/audit.log).
+  -k, --kill            Detiene el daemon del repo indicado (SOLO válido junto con --repo).
+  -h, --help            Muestra esta ayuda y termina.
+
+Comportamiento:
+  • Monitorea SOLO la rama 'main' (o 'master' si no existe 'main').
+  • Un solo daemon por repo (se evita duplicar procesos).
+  • --kill localiza el daemon por coincidencia exacta de la ruta de --repo en el cmdline.
+  • Normaliza CRLF antes de buscar (compatibilidad WSL y Linux nativo).
+  • Se omiten archivos binarios.
+  • Logging atómico si está disponible 'flock'.
+
+Dependencias requeridas:
+  git, inotifywait, jq, grep (con soporte -P/PCRE)
+  Ubuntu/Debian: sudo apt install -y inotify-tools jq grep git
+  CentOS/RHEL:   sudo yum install -y inotify-tools jq grep git
+EOF
+}
 
 # ---------- Helpers ----------
 to_abs_path() {
@@ -210,8 +244,10 @@ while [[ $# -gt 0 ]]; do
     -c|--configuracion)   CONFIG="$(to_abs_path "${2:-}")"; shift 2;;
     -l|--log)             LOGFILE="$(to_abs_path "${2:-}")"; shift 2;;
     -k|--kill)            KILL_MODE=1; shift;;
-    -repo|--branch|--interval|-b|-i|--config|-config|--alerta|-a|*)
-      log_error "Flag no permitido o desconocido: $1"; exit 1;;
+    -h|--help)            show_help; exit 0;;
+    --)                   shift; break;;
+    -*)                   log_error "Flag no permitido o desconocido: $1"; exit 1;;
+    *)                    log_error "Argumento no reconocido: $1"; exit 1;;
   esac
 done
 
@@ -263,4 +299,3 @@ else
   # El HIJO NO se auto-bloquea: entra directo al loop
   daemon_loop
 fi
-
