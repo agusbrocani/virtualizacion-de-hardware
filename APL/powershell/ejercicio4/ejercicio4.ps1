@@ -60,60 +60,71 @@
     - Se monitorean cambios en .git/refs/heads/, .git/HEAD y .git/packed-refs.
 #>
 
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Run')]
 param(
-    [Parameter(Mandatory = $true)]
+    # Repo es obligatorio en ambos sets
+    [Parameter(Mandatory = $true, ParameterSetName = 'Run')]
+    [Parameter(Mandatory = $true, ParameterSetName = 'Kill')]
     [ValidateScript({
         if (-not (Test-Path $_ -PathType Container)) {
             throw "El directorio '$_' no existe."
         }
-        if (-not (Test-Path (Join-Path $_ ".git") -PathType Container)) {
+        if (-not (Test-Path (Join-Path $_ '.git') -PathType Container)) {
             throw "El directorio '$_' no es un repositorio Git válido."
         }
-        return $true
+        $true
     })]
     [string]$repo,
 
-    [Parameter(Mandatory = $true)]
+    # Solo en modo Run
+    [Parameter(Mandatory = $true, ParameterSetName = 'Run')]
     [ValidateScript({
         if (-not (Test-Path $_ -PathType Leaf)) {
             throw "El archivo de configuración '$_' no existe."
         }
-        $validPatterns = Get-Content $_ | Where-Object { 
-            $_.Trim() -ne '' -and -not $_.Trim().StartsWith('#') 
+        $validPatterns = Get-Content $_ | Where-Object {
+            $_.Trim() -ne '' -and -not $_.Trim().StartsWith('#')
         }
         if ($validPatterns.Count -eq 0) {
             throw "El archivo de configuración '$_' no contiene patrones válidos. Debe tener al menos una entrada."
         }
-        return $true
+        $true
     })]
     [string]$configuracion,
 
-    [Parameter(Mandatory = $true)]
+    # Solo en modo Run
+    [Parameter(Mandatory = $true, ParameterSetName = 'Run')]
     [ValidateScript({
         $parentDir = Split-Path $_ -Parent
         if ($parentDir -and -not (Test-Path $parentDir -PathType Container)) {
             throw "El directorio padre para el archivo de log '$parentDir' no existe."
         }
-        return $true
+        $true
     })]
     [string]$log,
 
-    [Parameter(Mandatory = $false)]
+    # Solo en modo Kill
+    [Parameter(Mandatory = $true, ParameterSetName = 'Kill')]
     [switch]$kill,
 
-    [Parameter(Mandatory = $false)]
+    # Solo en modo Run (interno para el demonio)
+    [Parameter(Mandatory = $false, ParameterSetName = 'Run')]
     [switch]$__daemon
 )
 
 try {
+    # Siempre resolvemos repo
     $repo = (Resolve-Path -Path $repo -ErrorAction Stop).Path
-    $configuracion = (Resolve-Path -Path $configuracion -ErrorAction Stop).Path
-    # Para el log, puede ser un archivo aún no creado, se resuelve el directorio padre
-    $logParent = Split-Path -Parent $log
-    if ($logParent) {
-        $logParentAbs = (Resolve-Path -Path $logParent -ErrorAction Stop).Path
-        $log = Join-Path $logParentAbs (Split-Path -Leaf $log)
+
+    if ($PSCmdlet.ParameterSetName -eq 'Run') {
+        # Solo en modo Run resolvemos configuracion y log
+        $configuracion = (Resolve-Path -Path $configuracion -ErrorAction Stop).Path
+
+        $logParent = Split-Path -Parent $log
+        if ($logParent) {
+            $logParentAbs = (Resolve-Path -Path $logParent -ErrorAction Stop).Path
+            $log = Join-Path $logParentAbs (Split-Path -Leaf $log)
+        }
     }
 }
 catch {
