@@ -87,6 +87,11 @@ param(
 )
 
 # --- validaciones iniciales ---
+# si me pasan camino y hub no dejo seguir
+if ($Hub -and $Camino) {
+    Write-Host "Error: No se pueden usar las opciones -Hub y -Camino al mismo tiempo." -ForegroundColor Red
+    exit 1
+}
 
 # si no se pasó modo (-Hub o -Camino)
 if (-not ($Hub -or $Camino)) {

@@ -1,145 +1,182 @@
-#! /bin/bash
-
+#!/bin/bash
 #-------------------------------------------------------#
 #               Virtualizacion de Hardware              #
 #                                                       #
-#   APL1                                                #
-#   Nro ejercicio: 1                                    #
+#   APL1 - Ejercicio 1                                  #
 #                                                       #
 #   Integrantes:                                        #
-#                                                       #
 #        BIANCHI, JUAN              30474902            #
 #        BROCANI, AGUSTIN           40931870            #
 #        PASCUAL, PABLO             39208705            #
 #        SANZ, ELISEO               44690195            #
 #        VARALDO, RODRIGO           42772765            #
-#                                                       #
 #-------------------------------------------------------#
 
-# ============================================================
-# Analiza archivos de encuestas y genera un resumen JSON
-# ID|FECHA|CANAL|TIEMPO_RESPUESTA|NOTA_SATISFACCION
-# ============================================================
-
+# Help
 mostrar_ayuda() {
-  cat << EOF
-Uso:
-  ./ejercicio1.sh -d <directorio> (-a <directorio_salida> | -p)
-
-Descripción:
-  Procesa todos los archivos .txt en el directorio indicado,
-  agrupando por fecha y canal, y calculando promedios.
-
-Parámetros:
-  -d, --directorio   Directorio con archivos .txt de encuestas
-  -a, --archivo      Directorio donde guardar el JSON generado
-  -p, --pantalla     Mostrar salida por pantalla (en lugar de archivo)
-  -h, --help         Mostrar esta ayuda
-
-Notas:
-  No se puede usar -a y -p al mismo tiempo.
-EOF
+  echo "Uso: $0 -d <directorio> [-a <directorio_salida> | -p]"
+  echo
+  echo "Analiza archivos de encuestas y genera un resumen con promedios diarios por canal."
+  echo
+  echo "Parámetros:"
+  echo "  -d, --directorio   Directorio que contiene los archivos .txt de encuestas"
+  echo "  -a, --archivo      Directorio donde se guardará el archivo JSON"
+  echo "  -p, --pantalla     Muestra el resultado por pantalla"
+  echo "  -h, --help         Muestra esta ayuda"
+  echo
+  echo "Ejemplos:"
+  echo "  $0 -d ./lotes -p"
+  echo "  $0 -d ./lotes -a ./salidas"
+  exit 0
 }
 
-# --- Parseo de parámetros ---
+# Validación de parámetros
+directorio=""
+archivo=""
+pantalla="false"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -d|--directorio) DIRECTORIO="$2"; shift 2 ;;
-    -a|--archivo) ARCHIVO="$2"; shift 2 ;;
-    -p|--pantalla) PANTALLA=1; shift ;;
-    -h|--help) mostrar_ayuda; exit 0 ;;
-    *) echo "Error: parámetro desconocido '$1'"; mostrar_ayuda; exit 1 ;;
+    -d|--directorio)
+      directorio="$2"
+      shift 2
+      ;;
+    -a|--archivo)
+      archivo="$2"
+      shift 2
+      ;;
+    -p|--pantalla)
+      pantalla="true"
+      shift 1
+      ;;
+    -h|--help)
+      mostrar_ayuda
+      ;;
+    *)
+      echo "Error: parámetro desconocido '$1'. Usa -h para ayuda." >&2
+      exit 1
+      ;;
   esac
 done
 
-# --- Validaciones ---
-if [[ -z "$DIRECTORIO" ]]; then
-  echo "Error: debe indicar un directorio con -d." >&2
-  exit 1
-fi
-if [[ -z "$ARCHIVO" && -z "$PANTALLA" ]]; then
-  echo "Error: debe indicar -a o -p." >&2
-  exit 1
-fi
-if [[ -n "$ARCHIVO" && -n "$PANTALLA" ]]; then
-  echo "Error: no puede usar -a y -p al mismo tiempo." >&2
-  exit 1
-fi
-if [[ ! -d "$DIRECTORIO" ]]; then
-  echo "Error: el directorio '$DIRECTORIO' no existe." >&2
+# Validaciones
+if [[ -z "$directorio" ]]; then
+  echo "Error: el parámetro -d/--directorio es obligatorio." >&2
   exit 1
 fi
 
-# --- Procesamiento con AWK ---
-JSON=$(awk -F'|' '
-BEGIN {
-  OFS="|"
-}
+if [[ "$pantalla" == "true" && -n "$archivo" ]]; then
+  echo "Error: no puede usarse -a y -p juntos." >&2
+  exit 1
+fi
+
+if [[ "$pantalla" != "true" && -z "$archivo" ]]; then
+  echo "Error: debe usarse uno de -a o -p." >&2
+  exit 1
+fi
+
+# Resolver rutas absolutas
+directorio=$(realpath "$directorio" 2>/dev/null)
+if [[ ! -d "$directorio" ]]; then
+  echo "Error: '$directorio' no es un directorio válido." >&2
+  exit 1
+fi
+
+if [[ "$pantalla" != "true" ]]; then
+  archivo=$(realpath "$archivo" 2>/dev/null)
+  if [[ ! -d "$archivo" ]]; then
+    echo "Error: '$archivo' no es un directorio válido." >&2
+    exit 1
+  fi
+fi
+
+# Procesar archivos
+archivos=$(find "$directorio" -maxdepth 1 -type f -name "*.txt")
+if [[ -z "$archivos" ]]; then
+  echo "Error: no se encontraron archivos .txt en '$directorio'." >&2
+  exit 1
+fi
+
+tmpfile=$(mktemp)
+trap "rm -f $tmpfile" EXIT
+
+# Leer todos los archivos y filtrar líneas válidas
+for f in $archivos; do
+  awk -F"|" '
+  NF==5 && $3!="" {
+    fecha=$2
+    split(fecha, a, " ")
+    dia=a[1]
+    canal=$3
+    dur=$4+0
+    nota=$5+0
+    if (dur >= 0 && nota >= 1 && nota <= 5) {
+      print dia "|" canal "|" dur "|" nota
+    } else {
+      printf "Advertencia: registro inválido en %s: %s\n", FILENAME, $0 > "/dev/stderr"
+    }
+  }' "$f" >> "$tmpfile"
+done
+
+if [[ ! -s "$tmpfile" ]]; then
+  echo "Error: no se encontraron registros válidos." >&2
+  exit 1
+fi
+
+# GENERAR JSON CON AWK
+json=$(awk -F"|" '
 {
-  if (NF != 5) next
-
-  fecha_full = $2
-  canal = $3
-  dur = $4
-  nota = $5
-
-  split(fecha_full, arr, " ")
-  fecha = arr[1]
-
-  key = fecha "|" canal
-  sumaDur[key] += dur
-  sumaNota[key] += nota
+  key = $1 "|" $2
   count[key]++
-
-  fechas[fecha] = 1
-  canales[fecha, canal] = 1
+  sumDur[key] += $3
+  sumNota[key] += $4
+  fechas[$1] = 1
+  canales[$1,$2] = 1
 }
 END {
   printf "{\n"
-  nf = 0
-  PROCINFO["sorted_in"] = "@ind_str_asc"
-
-  # Iterar fechas
+  nF=0
+  for (f in fechas) totalF++
   for (f in fechas) {
-    if (nf++ > 0) printf ",\n"
+    nF++
     printf "  \"%s\": {\n", f
 
-    nc = 0
-    for (fc in canales) {
-      split(fc, arr, SUBSEP)
-      fecha = arr[1]; canal = arr[2]
-      if (fecha != f) continue
-
-      k = fecha "|" canal
-      promDur = sprintf("%.2f", sumaDur[k] / count[k])
-      promNota = sprintf("%.2f", sumaNota[k] / count[k])
-
-      if (nc++ > 0) printf ",\n"
-      printf "    \"%s\": { \"tiempo_respuesta_promedio\": %s, \"nota_satisfaccion_promedio\": %s }", canal, promDur, promNota
+    # contar cuántos canales tiene esta fecha
+    totalC = 0
+    for (k in canales) {
+      split(k, parts, SUBSEP)
+      fecha = parts[1]
+      if (fecha == f) totalC++
     }
 
-    printf "\n  }"
+    cIndex = 0
+    for (k in canales) {
+      split(k, parts, SUBSEP)
+      fecha = parts[1]
+      canal = parts[2]
+      if (fecha != f) continue
+      key = fecha "|" canal
+      promDur = sumDur[key] / count[key]
+      promNota = sumNota[key] / count[key]
+      printf "    \"%s\": {\n", canal
+      printf "      \"tiempo_respuesta_promedio\": %.2f,\n", promDur
+      printf "      \"nota_satisfaccion_promedio\": %.2f\n", promNota
+      cIndex++
+      if (cIndex < totalC) printf "    },\n"; else printf "    }\n"
+    }
+
+    printf "  }"
+    if (nF < totalF) printf ",\n"; else printf "\n"
   }
+  printf "}\n"
+}' "$tmpfile")
 
-  printf "\n}\n"
-}
-' "$DIRECTORIO"/*.txt 2>/dev/null)
-
-if [[ -z "$JSON" ]]; then
-  echo "Error: no se encontraron registros válidos en '$DIRECTORIO'." >&2
-  exit 1
-fi
-
-# --- Salida ---
-if [[ -n "$PANTALLA" ]]; then
-  echo "$JSON"
+# Salida
+if [[ "$pantalla" == "true" ]]; then
+  echo "$json"
 else
-  if [[ ! -d "$ARCHIVO" ]]; then
-    echo "Error: el directorio de salida '$ARCHIVO' no existe." >&2
-    exit 1
-  fi
   nombre="analisis-resultado-encuestas-$(date '+%Y-%m-%d_%H-%M-%S').json"
-  ruta="$ARCHIVO/$nombre"
-  echo "$JSON" > "$ruta"
+  ruta="$archivo/$nombre"
+  echo "$json" > "$ruta"
   echo "Archivo generado: $ruta"
 fi
