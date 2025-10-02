@@ -1,5 +1,4 @@
-#!/bin/bash
-
+#!/usr/bin/env bash
 #-------------------------------------------------------#
 #               Virtualizacion de Hardware              #
 #                                                       #
@@ -16,763 +15,287 @@
 #                                                       #
 #-------------------------------------------------------#
 
+# ejercicio4.sh - Monitorea un repo Git (solo main/master) y escanea archivos modificados
+# buscando credenciales/datos sensibles (patrones simples + regex).
+# Flags PERMITIDOS: -r/--repo  -c/--configuracion  -l/--log  -k/--kill  -h/--help
 set -euo pipefail
 
-# Variables globales
-tmp="$(basename "$0")"
-readonly SCRIPT_NAME="$tmp"
-readonly TEMP_DIR="${TMPDIR:-/tmp}"
-readonly DAEMON_PREFIX="git-security-daemon"
-readonly CONFIG_PREFIX="git-security-config"
-readonly PROCESSED_PREFIX="git-security-processed"
+# ---------- UI ----------
+RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; NC=$'\033[0m'
+log_error(){ echo -e "${RED}[ERROR]${NC} $*" >&2; }
+log_info(){  echo -e "${GREEN}[INFO] ${NC}$*"; }
+log_warn(){  echo -e "${YELLOW}[WARN] ${NC}$*"; }
+timestamp(){ date +"%Y-%m-%d %H:%M:%S"; }
 
-# Colores para output
-readonly RED='\033[0;31m'
-readonly GREEN='\033[0;32m'
-readonly YELLOW='\033[1;33m'
-readonly CYAN='\033[0;36m'
-readonly GRAY='\033[0;37m'
-readonly NC='\033[0m' # No Color
-
-# Función para mostrar ayuda
+# ---------- Help ----------
 show_help() {
-    cat << EOF
-SINOPSIS
-    Demonio de monitoreo para detectar credenciales y datos sensibles en repositorios Git.
+  cat <<'EOF'
+Uso:
+  Iniciar daemon:
+    ./ejercicio4.sh -r <ruta_repo> -c <patrones.conf> [-l <archivo_log>]
+    ./ejercicio4.sh --repo <ruta_repo> --configuracion <patrones.conf> [--log <archivo_log>]
 
-DESCRIPCIÓN
-    Este script implementa un demonio que monitorea un repositorio Git en tiempo real para detectar
-    credenciales o datos sensibles que se hayan subido por error. Utiliza inotify para detectar
-    cambios en la rama principal y escanea archivos modificados usando patrones configurables.
+  Detener daemon:
+    ./ejercicio4.sh -r <ruta_repo> -k
+    ./ejercicio4.sh --repo <ruta_repo> --kill
 
-PARÁMETROS
-    -repo PATH               Ruta del repositorio Git a monitorear
-    -configuracion PATH      Archivo de configuración con patrones de seguridad  
-    -log PATH                Archivo de logs donde registrar alertas
-    -kill                    Detener el demonio en ejecución
-    -help                    Mostrar esta ayuda
+Flags permitidos:
+  -r, --repo            Ruta del repositorio Git a monitorear (se normaliza a la raíz del repo).
+  -c, --configuracion   Archivo de configuración con patrones (líneas simples o prefijo 'regex:').
+  -l, --log             Archivo de log (por defecto: <repo>/.git/audit.log).
+  -k, --kill            Detiene el daemon del repo indicado (SOLO válido junto con --repo).
+  -h, --help            Muestra esta ayuda y termina.
 
-EJEMPLOS
-    # Iniciar el demonio
-    $SCRIPT_NAME -repo /path/to/repo -configuracion patterns.conf -log security.log
-    
-    # Detener el demonio
-    $SCRIPT_NAME -repo /path/to/repo -kill
+Comportamiento:
+  • Monitorea SOLO la rama 'main' (o 'master' si no existe 'main').
+  • Un solo daemon por repo (se evita duplicar procesos).
+  • --kill localiza el daemon por coincidencia exacta de la ruta de --repo en el cmdline.
+  • Normaliza CRLF antes de buscar (compatibilidad WSL y Linux nativo).
+  • Se omiten archivos binarios.
+  • Logging atómico si está disponible 'flock'.
 
-ARCHIVOS
-    El demonio crea archivos temporales en $TEMP_DIR para:
-    - Control de procesos (PID files)
-    - Configuración temporal
-    - Control de commits procesados (debounce)
-
-NOTAS
-    - Solo puede ejecutarse un demonio por repositorio
-    - Requiere inotify-tools para monitoreo en tiempo real
-    - Los patrones soportan texto simple y expresiones regulares (prefijo 'regex:')
-
+Dependencias requeridas:
+  git, inotifywait, jq, grep (con soporte -P/PCRE)
+  Ubuntu/Debian: sudo apt install -y inotify-tools jq grep git
+  CentOS/RHEL:   sudo yum install -y inotify-tools jq grep git
 EOF
 }
 
-# Función para logging con colores
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $*" >&2
+# ---------- Helpers ----------
+to_abs_path() {
+  local p="${1:-}"; [[ -z "$p" ]] && { echo ""; return 0; }
+  if [[ "$p" = /* ]]; then echo "$p"; else
+    local dir base; dir="$(dirname -- "$p")"; base="$(basename -- "$p")"
+    (cd -- "$dir" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base") || printf '%s\n' "$p"
+  fi
+}
+canon_repo() { # normaliza a la RAÍZ real del repo
+  local p
+  p="$(to_abs_path "$1")"
+  ( cd "$p" && git rev-parse --show-toplevel 2>/dev/null ) || ( cd "$p" && pwd -P )
+}
+hash_repo_path(){ echo -n "$1" | md5sum | awk '{print $1}'; }
+
+# Devuelve PIDs de este script cuyo cmdline contiene --repo/-r con la misma ruta (con y sin / final)
+find_daemon_pids_by_repo() {
+  local n="${REPO%/}"           # sin barra final
+  local script
+  script="$(basename "$0")"
+  ps -eo pid=,args= | awk -v script="$script" -v n="$n" 'index($0, script) && (index($0, "--repo " n) || index($0, "-r " n) || index($0, "--repo " n "/") || index($0, "-r " n "/")) {print $1}'
 }
 
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $*" >&2
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $*" >&2
-}
-
-log_debug() {
-    if [[ "${VERBOSE:-0}" -eq 1 ]]; then
-        echo -e "${GRAY}[DEBUG]${NC} $*" >&2
-    fi
-}
-
-# Función para verificar dependencias
+# ---------- Dependencias (EXIGE grep -P para PCRE) ----------
 check_dependencies() {
-    local -a missing_deps=()
-    
-    # Verificar herramientas básicas
-    for cmd in git inotifywait jq; do
-        if ! command -v "$cmd" &> /dev/null; then
-            missing_deps+=("$cmd")
-        fi
-    done
-    
-    if [[ ${#missing_deps[@]} -gt 0 ]]; then
-        log_error "Dependencias faltantes: ${missing_deps[*]}"
-        log_error "En Ubuntu/Debian: sudo apt install inotify-tools jq"
-        log_error "En CentOS/RHEL: sudo yum install inotify-tools jq"
-        exit 1
-    fi
+  local -a missing=()
+  for cmd in git inotifywait jq grep; do command -v "$cmd" &>/dev/null || missing+=("$cmd"); done
+  if ((${#missing[@]})); then
+    log_error "Dependencias faltantes: ${missing[*]}"
+    log_error "Ubuntu/Debian: sudo apt install -y inotify-tools jq grep git"
+    log_error "CentOS/RHEL:   sudo yum install -y inotify-tools jq grep git"
+    exit 1
+  fi
+  if ! grep -P "" <<<"" >/dev/null 2>&1; then
+    log_error "Tu 'grep' no soporta -P (PCRE). Es obligatorio para las regex del config."
+    log_error "Instalá GNU grep con soporte PCRE. En Ubuntu/Debian: sudo apt install -y grep"
+    exit 1
+  fi
+  command -v flock >/dev/null 2>&1 || log_warn "flock no encontrado: el log podría intercalar líneas bajo concurrencia."
 }
 
-# Función para validar parámetros
-validate_params() {
-    # Validar repositorio
-    if [[ ! -d "$REPO_PATH" ]]; then
-        log_error "El directorio '$REPO_PATH' no existe"
-        exit 1
-    fi
-    
-    if [[ ! -d "$REPO_PATH/.git" ]]; then
-        log_error "El directorio '$REPO_PATH' no es un repositorio Git válido"
-        exit 1
-    fi
-    
-    # Validar archivo de configuración (solo si no es kill)
-    if [[ "$ACTION" != "kill" ]]; then
-        if [[ ! -f "$CONFIG_PATH" ]]; then
-            log_error "El archivo de configuración '$CONFIG_PATH' no existe"
-            exit 1
-        fi
-        
-        # Verificar que tenga al menos un patrón válido
-        local valid_patterns
-        valid_patterns=$(grep -v '^#' "$CONFIG_PATH" | grep -v '^[[:space:]]*$' | wc -l)
-        if [[ $valid_patterns -eq 0 ]]; then
-            log_error "El archivo de configuración '$CONFIG_PATH' no contiene patrones válidos"
-            exit 1
-        fi
-        
-        # Validar directorio del log
-        local log_dir
-        log_dir=$(dirname "$LOG_PATH")
-        if [[ ! -d "$log_dir" ]]; then
-            log_error "El directorio padre del log '$log_dir' no existe"
-            exit 1
-        fi
-    fi
-}
+# ---------- Git ----------
+branch_exists(){ (cd "$REPO" && git show-ref --verify --quiet "refs/heads/$1"); }
+get_head_commit(){ (cd "$REPO" && git rev-parse HEAD); }
+get_changed_files_since(){ local since="$1"; (cd "$REPO" && git diff --name-only "${since}..HEAD" --); }
 
-# Función para obtener ruta del archivo PID
-get_pid_file() {
-    local repo_hash
-    repo_hash=$(echo "$REPO_PATH" | tr '/' '_' | tr -d ':')
-    echo "$TEMP_DIR/${DAEMON_PREFIX}-${repo_hash}.pid"
-}
+# ---------- Patrones ----------
+declare -a PATTERNS_FIXED=() PATTERNS_REGEX=()
 
-# Función para verificar si hay un demonio corriendo
-is_daemon_running() {
-    local pid_file
-    pid_file=$(get_pid_file)
-    
-    if [[ ! -f "$pid_file" ]]; then
-        return 1
-    fi
-    
-    local pid
-    pid=$(cat "$pid_file" 2>/dev/null || echo "")
-    if [[ -z "$pid" ]]; then
-        rm -f "$pid_file"
-        return 1
-    fi
-    
-    if kill -0 "$pid" 2>/dev/null; then
-        return 0
+_trim_ws_and_cr() { local s="$1"; s="${s%$'\r'}"; s="${s#"${s%%[!$' \t']*}"}"; s="${s%"${s##*[!$' \t']}"}"; printf '%s' "$s"; }
+
+load_patterns() {
+  local cfg="$1"; [[ -f "$cfg" ]] || { log_error "Archivo de configuración no existe: $cfg"; exit 1; }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="$(_trim_ws_and_cr "$line")"
+    [[ -z "$line" ]] && continue
+    [[ "$line" == \#* ]] && continue
+    if [[ "$line" == regex:* ]]; then
+      line="${line#regex:}"; line="$(_trim_ws_and_cr "$line")"
+      [[ -n "$line" ]] && PATTERNS_REGEX+=("$line")
     else
-        rm -f "$pid_file"
-        return 1
+      PATTERNS_FIXED+=("$line")
     fi
+  done < "$cfg"
+  mapfile -t PATTERNS_FIXED < <(printf "%s\n" "${PATTERNS_FIXED[@]}" | awk '!seen[$0]++')
+  mapfile -t PATTERNS_REGEX < <(printf "%s\n" "${PATTERNS_REGEX[@]}"  | awk '!seen[$0]++')
 }
 
-# Función para detener el demonio
-stop_daemon() {
-    local pid_file
-    pid_file=$(get_pid_file)
-
-    if [[ ! -f "$pid_file" ]]; then
-        log_error "No se encontró un demonio activo para el repositorio '$REPO_PATH'"
-        exit 1
-    fi
-
-    local pid
-    pid="$(cat "$pid_file" 2>/dev/null || true)"
-    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
-        log_warn "PID inválido o proceso inexistente. Limpio archivos y salgo."
-        rm -f "$pid_file"
-        cleanup_temp_files
-        return 0
-    fi
-
-    log_info "Deteniendo demonio con PID $pid..."
-
-    # Escapar el REPO_PATH para regex de pkill -f
-    local repo_re
-    repo_re="$(printf '%s' "$REPO_PATH" | sed 's/[.[\*^$()+?{}|]/\\&/g')"
-
-    # 1) Enviar SIGTERM al GRUPO de procesos del daemon (si tiene su propio PGID)
-    #    (kill -<pgid> envía la señal a todo el grupo)
-    log_debug "Enviando SIGTERM al grupo -$pid y al PID $pid"
-    kill -TERM -"$pid" 2>/dev/null || true
-    kill -TERM  "$pid" 2>/dev/null || true
-
-    # 2) Terminar hijos por PPID (por si la shell creó pipeline subshells)
-    pkill -TERM -P "$pid" 2>/dev/null || true
-
-    # 3) Terminar inotifywait asociado a ESTE repo (no todos)
-    pkill -TERM -f "inotifywait.*${repo_re}(/\.git)?/" 2>/dev/null || true
-    pkill -TERM -f "inotifywait.*${repo_re}.*\.git"    2>/dev/null || true
-
-    sleep 1
-
-    # 4) Forzar KILL si queda algo vivo
-    pkill -KILL -P "$pid" 2>/dev/null || true
-    kill -KILL -"$pid" 2>/dev/null || true
-    pkill -KILL -f "inotifywait.*${repo_re}(/\.git)?/" 2>/dev/null || true
-    pkill -KILL -f "inotifywait.*${repo_re}.*\.git"    2>/dev/null || true
-
-    # 5) Verificación (solo debug)
-    local remain
-    remain="$(pgrep -a -P "$pid" 2>/dev/null || true)"
-    if [[ -n "$remain" ]]; then
-        log_warn "Aún hay hijos colgando:\n$remain"
-    fi
-    local remain_inw
-    remain_inw="$(pgrep -a -f "inotifywait.*${repo_re}" 2>/dev/null || true)"
-    if [[ -n "$remain_inw" ]]; then
-        log_warn "inotifywait restante:\n$remain_inw"
-    fi
-
-    # 6) Limpieza
-    sleep 1
-    log_info "Ejecutando limpieza de archivos temporales..."
-    cleanup_temp_files
-    rm -f "$pid_file"
-
-    log_info "Demonio detenido para repositorio: $REPO_PATH"
+# ---------- Log atómico ----------
+LOG_LOCKFILE=""
+log_line() {
+  local line="$1"
+  if command -v flock >/dev/null 2>&1; then
+    flock -x "$LOG_LOCKFILE" bash -c "printf '%s\n' \"\$1\" >> \"\$2\"" _ "$line" "$LOGFILE"
+  else
+    printf "%s\n" "$line" >> "$LOGFILE"
+  fi
+}
+log_alert(){ # $1=patrón $2=archivo_rel $3=nro_linea $4=Tipo
+  log_line "$(printf "[%s] Alerta: patrón '%s' encontrado en el archivo '%s' (línea %s) [Tipo: %s]" \
+    "$(timestamp)" "$1" "$2" "$3" "$4")"
 }
 
-# Función para limpiar archivos temporales
-cleanup_temp_files() {
-    log_info "Iniciando limpieza de archivos temporales del demonio..."
-    
-    local config_files processed_files pid_files
-    local total_files=0 cleaned_files=0
-    
-    # Buscar archivos temporales
-    config_files=$(find "$TEMP_DIR" -name "${CONFIG_PREFIX}-*.json" 2>/dev/null || true)
-    processed_files=$(find "$TEMP_DIR" -name "${PROCESSED_PREFIX}-*.json" 2>/dev/null || true)
-    pid_files=$(find "$TEMP_DIR" -name "${DAEMON_PREFIX}-*.pid" 2>/dev/null || true)
-    
-    # Contar archivos
-    [[ -n "$config_files" ]] && total_files=$((total_files + $(echo "$config_files" | wc -l)))
-    [[ -n "$processed_files" ]] && total_files=$((total_files + $(echo "$processed_files" | wc -l)))
-    [[ -n "$pid_files" ]] && total_files=$((total_files + $(echo "$pid_files" | wc -l)))
-    
-    log_info "Archivos temporales encontrados:"
-    echo -e " ${CYAN}-${NC} Configuración: $(printf "%s\n" "$config_files" | grep -c .)"
-    echo -e " ${CYAN}-${NC} Commits procesados: $(printf "%s\n" "$processed_files" | grep -c .)"
-    echo -e " ${CYAN}-${NC} Archivos PID: $(printf "%s\n" "$pid_files" | grep -c .)"
-    
-    if [[ $total_files -eq 0 ]]; then
-        log_info "No se encontraron archivos temporales para limpiar."
-        return
-    fi
-    
-    # Obtener PIDs activos
-    local -a active_pids=()
-    if [[ -n "$pid_files" ]]; then
-        while IFS= read -r pid_file; do
-            [[ -z "$pid_file" ]] && continue
-            local pid
-            pid=$(cat "$pid_file" 2>/dev/null || echo "")
-            if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-                active_pids+=("$pid")
-                log_warn " PID $pid está activo - archivos relacionados serán preservados"
-            fi
-        done <<< "$pid_files"
-    fi
-    
-    # Limpiar archivos de configuración
-    if [[ -n "$config_files" ]]; then
-        while IFS= read -r file; do
-            [[ -z "$file" ]] && continue
-            local pid_from_file
-            pid_from_file=$(basename "$file" .json | cut -d'-' -f3)
-            
-            if [[ ! " ${active_pids[*]} " =~ [[:space:]]${pid_from_file}[[:space:]] ]]; then
-                rm -f "$file"
-                echo -e "  ${GREEN}✓${NC} Eliminado: $(basename "$file")"
-                ((cleaned_files++))
-            else
-                echo -e "  ${YELLOW}→${NC} Preservado: $(basename "$file") (demonio activo)"
-            fi
-        done <<< "$config_files"
-    fi
-    
-    # Limpiar archivos de commits procesados
-    if [[ -n "$processed_files" ]]; then
-        while IFS= read -r file; do
-            [[ -z "$file" ]] && continue
-            local pid_from_file
-            pid_from_file=$(basename "$file" .json | cut -d'-' -f3)
-            
-            if [[ ! " ${active_pids[*]} " =~ [[:space:]]${pid_from_file}[[:space:]] ]]; then
-                rm -f "$file"
-                echo -e "  ${GREEN}✓${NC} Eliminado: $(basename "$file")"
-                ((cleaned_files++))
-            else
-                echo -e "  ${YELLOW}→${NC} Preservado: $(basename "$file") (demonio activo)"
-            fi
-        done <<< "$processed_files"
-    fi
-    
-    # Limpiar archivos PID huérfanos
-    if [[ -n "$pid_files" ]]; then
-        while IFS= read -r file; do
-            [[ -z "$file" ]] && continue
-            local pid
-            pid=$(cat "$file" 2>/dev/null || echo "")
-            
-            if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-                echo -e "  ${YELLOW}→${NC} Preservado: $(basename "$file") (proceso activo PID $pid)"
-            else
-                rm -f "$file"
-                echo -e "  ${GREEN}✓${NC} Eliminado: $(basename "$file") (proceso no existe)"
-                ((cleaned_files++))
-            fi
-        done <<< "$pid_files"
-    fi
-    
-    log_info "Limpieza completada: $cleaned_files archivos eliminados de $total_files encontrados."
+# ---------- Regex (PCRE obligatorio) ----------
+_grep_regex() {
+  local pattern="$1" file="$2"
+  LC_ALL=C sed 's/\r$//' "$file" | grep -n -i -P --no-filename -- "$pattern" 2>/dev/null || true
 }
 
-# Función para cargar patrones de seguridad
-load_security_patterns() {
-    local patterns_file="$1"
-    local -a simple_patterns=()
-    local -a regex_patterns=()
-    
-    while IFS= read -r line; do
-        # Omitir líneas vacías y comentarios
-        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        
-        # Limpiar espacios y caracteres de retorno de carro
-        line=$(echo "$line" | sed 's/\r$//' | xargs)
-        [[ -z "$line" ]] && continue
-        
-        if [[ "$line" =~ ^regex: ]]; then
-            regex_patterns+=("${line#regex:}")
-        else
-            simple_patterns+=("$line")
-        fi
-    done < "$patterns_file"
-    
-    log_debug "Cargados ${#simple_patterns[@]} patrones simples y ${#regex_patterns[@]} patrones regex"
-    
-    # Crear archivo de configuración temporal
-    local config_file="$TEMP_DIR/${CONFIG_PREFIX}-$$.json"
-    jq -n \
-        --argjson simple "$(printf '%s\n' "${simple_patterns[@]}" | jq -R . | jq -s .)" \
-        --argjson regex "$(printf '%s\n' "${regex_patterns[@]}" | jq -R . | jq -s .)" \
-        '{
-            repository_path: $REPO_PATH,
-            log_path: $LOG_PATH,
-            simple_patterns: $simple,
-            regex_patterns: $regex
-        }' \
-        --arg REPO_PATH "$REPO_PATH" \
-        --arg LOG_PATH "$LOG_PATH" \
-        > "$config_file"
-    
-    echo "$config_file"
+# Extrae el número de línea desde la salida de grep -n (robusto ante "ruta:...:N:...")
+extract_lineno() {
+  local hit="$1"
+  if [[ "$hit" =~ ^([0-9]+): ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; return 0; fi
+  local before="${hit%:*}"; local ln="${before##*:}"
+  if [[ ! "$ln" =~ ^[0-9]+$ ]]; then ln="$(grep -oE '(^|:)[0-9]+(:|$)' <<<"$hit" | head -n1 | tr -d ':')"; fi
+  printf '%s\n' "$ln"
 }
 
-# Función para obtener archivos modificados en el último commit
-get_modified_files() {
-    local repo_path="$1"
-    local commit_hash="${2:-HEAD}"
-    local original_dir="$PWD"
-    
-    if [[ ! -d "$repo_path" ]]; then
-        log_error "El directorio del repositorio no existe: $repo_path"
-        return 1
-    fi
-    
-    if ! cd "$repo_path"; then
-        log_error "No se pudo acceder al directorio: $repo_path"
-        return 1
-    fi
-    
-    # Obtener archivos modificados en el commit
-    local modified_files
-    modified_files=$(git diff-tree --no-commit-id --name-only -r "$commit_hash" 2>/dev/null || true)
-    
-    # Regresar al directorio original
-    cd "$original_dir"
-    
-    if [[ -z "$modified_files" ]]; then
-        log_debug "No se encontraron archivos modificados en commit $commit_hash"
-        return
-    fi
-    
-    # Filtrar solo archivos de texto relevantes
-    while IFS= read -r file; do
-        [[ -z "$file" ]] && continue
-        
-        local full_path="$repo_path/$file"
-        if [[ -f "$full_path" ]] && [[ ! "$file" =~ \.(exe|dll|bin|png|jpg|gif|pdf)$ ]]; then
-            echo "$file"
-        fi
-    done <<< "$modified_files"
-}
-
-# Función para escanear archivo en busca de secretos
+# ---------- Escaneo de un archivo ----------
 scan_file_patterns() {
-    local file_path="$1"
-    local config_file="$2"
-    local -a alerts=()
-    
-    # Debug: Siempre escribir que se está llamando la función
-    echo "[DEBUG] $(date '+%Y-%m-%d %H:%M:%S') - Escaneando archivo: $file_path" >> "debug_scan.log"
-    
-    if [[ ! -f "$file_path" ]]; then
-        log_warn "Archivo no encontrado: $file_path"
-        echo "[DEBUG] $(date '+%Y-%m-%d %H:%M:%S') - ARCHIVO NO ENCONTRADO: $file_path" >> "debug_scan.log"
-        return
-    fi
-    
-    # Leer configuración
-    local simple_patterns regex_patterns
-    simple_patterns=$(jq -r '.simple_patterns[]' "$config_file" 2>/dev/null || true)
-    regex_patterns=$(jq -r '.regex_patterns[]' "$config_file" 2>/dev/null || true)
-    
-    echo "[DEBUG] $(date '+%Y-%m-%d %H:%M:%S') - Patrones cargados: $(echo "$simple_patterns" | wc -l) simples" >> "debug_scan.log"
-    
-    log_debug "Escaneando archivo: $file_path"
-    
-    # Escanear patrones simples
-    if [[ -n "$simple_patterns" ]]; then
-        while IFS= read -r pattern; do
-            [[ -z "$pattern" ]] && continue
-            
-            local line_num=1
-            while IFS= read -r line; do
-                if [[ "$line" =~ $pattern ]]; then
-                    alerts+=("$(echo "$file_path|$pattern|$line_num|${line:0:100}|Simple" | jq -R .)")
-                    log_debug "Patrón simple encontrado: '$pattern' en línea $line_num"
-                    echo "[DEBUG] $(date '+%Y-%m-%d %H:%M:%S') - MATCH SIMPLE: '$pattern' en línea $line_num del archivo $file_path" >> "debug_scan.log"
-                fi
-                ((line_num++))
-            done < "$file_path"
-        done <<< "$simple_patterns"
-    fi
-    
-    # Escanear patrones regex
-    if [[ -n "$regex_patterns" ]]; then
-        while IFS= read -r pattern; do
-            [[ -z "$pattern" ]] && continue
-            
-            local line_num=1
-            while IFS= read -r line; do
-                if [[ "$line" =~ $pattern ]]; then
-                    alerts+=("$(echo "$file_path|$pattern|$line_num|${line:0:100}|Regex" | jq -R .)")
-                    log_debug "Patrón regex encontrado: '$pattern' en línea $line_num"
-                fi
-                ((line_num++))
-            done < "$file_path"
-        done <<< "$regex_patterns"
-    fi
-    
-    # Escribir alertas al log
-    local log_path
-    log_path=$(jq -r '.log_path' "$config_file")
-    
-    for alert in "${alerts[@]}"; do
-        IFS='|' read -r file pattern line_num _ pattern_type <<< "$(echo "$alert" | jq -r .)"
-        
-        local timestamp filename
-        timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-        filename=$(basename "$file")
-        
-        local log_entry="[$timestamp] Alerta: patrón '$pattern' encontrado en el archivo '$filename' (línea $line_num) [Tipo: $pattern_type]"
-        echo "$log_entry" >> "$log_path"
-        echo -e "${RED}$log_entry${NC}"
-    done
+  local rel_path="$1"
+  [[ -z "$rel_path" ]] && return 0
+  [[ "$rel_path" == .git/* ]] && return 0
+
+  local abs_path="$REPO/$rel_path"
+  [[ -f "$abs_path" ]] || { log_warn "Archivo no encontrado: $rel_path"; return 0; }
+
+  # Omitir binarios
+  if ! LC_ALL=C grep -Iq . -- "$abs_path"; then return 0; fi
+
+  # Simples (literal, case-insensitive) con normalización CRLF
+  local pat pat_clean
+  for pat in "${PATTERNS_FIXED[@]}"; do
+    pat_clean="$(_trim_ws_and_cr "$pat")"; [[ -n "$pat_clean" ]] || continue
+    while IFS= read -r hit; do
+      [[ -z "$hit" ]] && continue
+      local ln; ln="$(extract_lineno "$hit")"
+      [[ -n "$ln" ]] && log_alert "$pat_clean" "$rel_path" "$ln" "Simple"
+    done < <(LC_ALL=C sed 's/\r$//' "$abs_path" | grep -n -F -i --no-filename -- "$pat_clean" 2>/dev/null || true)
+  done
+
+  # Regex (PCRE)
+  local rx rx_clean
+  for rx in "${PATTERNS_REGEX[@]}"; do
+    rx_clean="$(_trim_ws_and_cr "$rx")"; [[ -n "$rx_clean" ]] || continue
+    while IFS= read -r hit; do
+      [[ -z "$hit" ]] && continue
+      local ln; ln="$(extract_lineno "$hit")"
+      [[ -n "$ln" ]] && log_alert "$rx_clean" "$rel_path" "$ln" "Regex"
+    done < <(_grep_regex "$rx_clean" "$abs_path")
+  done
 }
 
-# Función principal del demonio
-start_daemon() {
-    local config_file
-    config_file=$(load_security_patterns "$CONFIG_PATH")
-    
-    local pid_file
-    pid_file=$(get_pid_file)
-    
-    # Crear archivo PID
-    echo $$ > "$pid_file"
-    
-    log_info "Demonio de seguridad iniciado para repositorio: $REPO_PATH"
-    log_info "PID del demonio: $$"
-    log_info "Archivo PID: $pid_file"
-    log_info "Archivo de log: $LOG_PATH"
-    
-    # Configurar limpieza al recibir señales
-    trap 'cleanup_and_exit' TERM INT
-    
-    # Archivo para control de commits procesados (debounce)
-    local processed_file="$TEMP_DIR/${PROCESSED_PREFIX}-$$.json"
-    echo '{}' > "$processed_file"
-    
-    log_info "Demonio iniciado correctamente. Use --kill para detenerlo."
-    log_info "El demonio se ejecuta en segundo plano de forma continua."
-    
-    # Monitorear cambios en .git usando inotify
-    local git_path="$REPO_PATH/.git"
-    
-    inotifywait -m -r -e modify,create,move "$git_path" --format '%w%f %e' 2>/dev/null | \
-    while read -r file event; do
-        local filename
-        filename=$(basename "$file")
-        
-        log_debug "Evento detectado: $event en $filename"
-        
-        # Filtrar eventos relevantes
-        if [[ "$filename" == "HEAD" || "$filename" == "COMMIT_EDITMSG" || "$file" =~ refs/heads/ || "$filename" == "packed-refs" ]]; then
-            log_debug "Cambio detectado en: $file"
-            
-            # Pequeño delay para que Git complete operaciones
-            sleep 0.5
-            
-            # Obtener hash del commit actual
-            local current_commit
-            if [[ -d "$REPO_PATH" ]]; then
-                current_commit=$(cd "$REPO_PATH" && git rev-parse HEAD 2>/dev/null || echo "")
-            else
-                log_error "El directorio del repositorio no existe: $REPO_PATH"
-                continue
-            fi
-            
-            if [[ -z "$current_commit" ]]; then
-                log_debug "No se pudo obtener hash del commit actual"
-                continue
-            fi
-            
-            # Verificar si ya procesamos este commit (debounce)
-            if jq -e --arg commit "$current_commit" 'has($commit)' "$processed_file" &>/dev/null; then
-                log_debug "DEBOUNCE: Commit ${current_commit:0:7} ya fue procesado"
-                continue
-            fi
-            
-            # Marcar commit como procesado
-            local timestamp
-            timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-            jq --arg commit "$current_commit" --arg time "$timestamp" '. + {($commit): $time}' "$processed_file" > "${processed_file}.tmp"
-            mv "${processed_file}.tmp" "$processed_file"
-            
-            log_debug "PROCESANDO: Nuevo commit ${current_commit:0:7} detectado"
-            echo "[DEBUG] $(date '+%Y-%m-%d %H:%M:%S') - NUEVO COMMIT: $current_commit" >> "debug_main.log"
-            
-            # Obtener archivos modificados
-            local modified_files
-            modified_files=$(get_modified_files "$REPO_PATH" "$current_commit")
-            
-            echo "[DEBUG] $(date '+%Y-%m-%d %H:%M:%S') - Archivos obtenidos: '$modified_files'" >> "debug_main.log"
-            
-            if [[ -z "$modified_files" ]]; then
-                log_debug "No se encontraron archivos modificados en el commit"
-                echo "[DEBUG] $(date '+%Y-%m-%d %H:%M:%S') - NO HAY ARCHIVOS MODIFICADOS" >> "debug_main.log"
-                continue
-            fi
-            
-            log_debug "Archivos modificados: $(echo "$modified_files" | wc -l)"
-            echo "[DEBUG] $(date '+%Y-%m-%d %H:%M:%S') - Cantidad de archivos: $(echo "$modified_files" | wc -l)" >> "debug_main.log"
-            
-            # Escanear cada archivo modificado
-            while IFS= read -r file; do
-                [[ -z "$file" ]] && continue
-                local full_path="$REPO_PATH/$file"
-                log_debug "Escaneando archivo: $file"
-                echo "[DEBUG] $(date '+%Y-%m-%d %H:%M:%S') - Escaneando: $file -> $full_path" >> "debug_main.log"
-                scan_file_patterns "$full_path" "$config_file"
-            done <<< "$modified_files"
-        fi
-    done
+# ---------- Limpieza ----------
+cleanup() { local code=$?; [[ -n "${LOG_LOCKFILE:-}" && -f "$LOG_LOCKFILE" ]] && rm -f "$LOG_LOCKFILE"; exit $code; }
+trap cleanup EXIT INT TERM ERR
+
+# ---------- Daemon ----------
+INTERVAL=5
+daemon_loop() {
+  local branch=""
+  if branch_exists main; then branch="main"
+  elif branch_exists master; then branch="master"
+  else log_error "El repo no tiene ramas 'main' ni 'master'."; exit 1; fi
+
+  local head_file="$REPO/.git/refs/heads/$branch"
+  local packed_refs="$REPO/.git/packed-refs"
+  local -a watch_targets=()
+  [[ -e "$head_file" ]] && watch_targets+=("$head_file")
+  [[ -e "$packed_refs" ]] && watch_targets+=("$packed_refs")
+  ((${#watch_targets[@]}==0)) && watch_targets+=("$REPO/.git")
+
+  local last_commit
+  last_commit="$(get_head_commit)"
+
+  log_line "$(printf "[%s] Patrones cargados: %d simples, %d regex" \
+    "$(timestamp)" "${#PATTERNS_FIXED[@]}" "${#PATTERNS_REGEX[@]}")"
+  log_info "Monitoreando $REPO (rama $branch) | log: $LOGFILE"
+
+  while :; do
+    inotifywait -q -e modify,attrib,close_write,move,create,delete --timeout "$INTERVAL" "${watch_targets[@]}" 2>/dev/null || sleep "$INTERVAL"
+    local current_commit
+    current_commit="$(get_head_commit)"
+    if [[ "$current_commit" != "$last_commit" ]]; then
+      mapfile -t changed < <(get_changed_files_since "$last_commit" || true)
+      if ((${#changed[@]} > 0)); then
+        log_line "$(printf "[%s] Detectados %d archivos modificados en %s..%s" \
+          "$(timestamp)" "${#changed[@]}" "${last_commit:0:7}" "${current_commit:0:7}")"
+        for f in "${changed[@]}"; do scan_file_patterns "$f"; done
+      fi
+      last_commit="$current_commit"
+    fi
+  done
 }
 
-# Función para normalizar rutas (convertir absolutas a relativas si es posible)
-normalize_path() {
-    local input_path="$1"
-    local current_dir
-    current_dir="$(pwd)"
-    
-    # Si ya es una ruta relativa, devolverla tal como está
-    if [[ ! "$input_path" =~ ^/ ]]; then
-        echo "$input_path"
-        return
-    fi
-    
-    # Si es ruta absoluta, intentar convertir a relativa
-    if [[ "$input_path" == "$current_dir" ]]; then
-        echo "."
-        return
-    fi
-    
-    # Si la ruta absoluta comienza con el directorio actual, hacerla relativa
-    if [[ "$input_path" == "$current_dir"/* ]]; then
-        local relative_path="${input_path#$current_dir/}"
-        echo "$relative_path"
-        return
-    fi
-    
-    # Si no se puede convertir a relativa, usar la absoluta
-    echo "$input_path"
-}
+# ---------- CLI ----------
+REPO=""; CONFIG=""; LOGFILE=""; KILL_MODE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -r|--repo)            REPO="$(canon_repo "${2:-}")"; shift 2;;
+    -c|--configuracion)   CONFIG="$(to_abs_path "${2:-}")"; shift 2;;
+    -l|--log)             LOGFILE="$(to_abs_path "${2:-}")"; shift 2;;
+    -k|--kill)            KILL_MODE=1; shift;;
+    -h|--help)            show_help; exit 0;;
+    --)                   shift; break;;
+    -*)                   log_error "Flag no permitido o desconocido: $1"; exit 1;;
+    *)                    log_error "Argumento no reconocido: $1"; exit 1;;
+  esac
+done
 
-# Función de limpieza al salir
-cleanup_and_exit() {
-    log_info "Señal de terminación recibida. Ejecutando limpieza..."
-    
-    # Matar procesos inotifywait relacionados antes de limpiar archivos
-    local inotify_pids
-    inotify_pids=$(pgrep -f "inotifywait.*\.git" 2>/dev/null || true)
-    
-    if [[ -n "$inotify_pids" ]]; then
-        log_info "Matando procesos inotifywait: $inotify_pids"
-        echo "$inotify_pids" | xargs -r kill -9 2>/dev/null || true
-    fi
-    
-    # Búsqueda adicional por procesos inotifywait
-    local more_inotify_pids
-    more_inotify_pids=$(ps aux | grep inotifywait | grep -v grep | awk '{print $2}' 2>/dev/null || true)
-    
-    if [[ -n "$more_inotify_pids" ]]; then
-        log_info "Matando TODOS los procesos inotifywait: $more_inotify_pids"
-        echo "$more_inotify_pids" | xargs -r kill -9 2>/dev/null || true
-    fi
-    
-    # Limpiar archivos temporales del proceso actual
-    rm -f "$TEMP_DIR/${CONFIG_PREFIX}-$$.json"
-    rm -f "$TEMP_DIR/${PROCESSED_PREFIX}-$$.json"
-    
-    local pid_file
-    pid_file=$(get_pid_file)
-    rm -f "$pid_file"
-    
-    log_info "Demonio detenido."
-    exit 0
-}
+[[ -z "$REPO" ]] && { log_error "Debe indicar -r/--repo <ruta al repo>"; exit 1; }
+REPO="$(canon_repo "$REPO")"
+[[ -d "$REPO/.git" ]] || { log_error "No parece un repo Git: $REPO"; exit 1; }
 
-# Función principal
-main() {
-    local repo_path="" config_path="" log_path="" action="start"
-    
-    # Parsear argumentos
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            -repo)
-                repo_path="$2"
-                shift 2
-                ;;
-            -configuracion)
-                config_path="$2"
-                shift 2
-                ;;
-            -log)
-                log_path="$2"
-                shift 2
-                ;;
-            -kill)
-                action="kill"
-                shift
-                ;;
-            -verbose)
-                VERBOSE=1
-                shift
-                ;;
-            -help)
-                show_help
-                exit 0
-                ;;
-            *)
-                log_error "Parámetro desconocido: $1"
-                show_help
-                exit 1
-                ;;
-        esac
-    done
-    
-    # Verificar parámetros requeridos
-    if [[ -z "$repo_path" ]]; then
-        log_error "El parámetro -repo es obligatorio"
-        show_help
-        exit 1
-    fi
-    
-    # Normalizar rutas (convertir absolutas a relativas cuando sea posible)
-    repo_path=$(normalize_path "$repo_path")
-    if [[ -n "$config_path" ]]; then
-        config_path=$(normalize_path "$config_path")
-    fi
-    if [[ -n "$log_path" ]]; then
-        log_path=$(normalize_path "$log_path")
-    fi
-    
-    log_debug "Rutas normalizadas:"
-    log_debug "  Repositorio: $repo_path"
-    log_debug "  Configuración: $config_path"
-    log_debug "  Log: $log_path"
-    
-    # Exportar variables globales
-    export REPO_PATH="$repo_path"
-    export CONFIG_PATH="$config_path"
-    export LOG_PATH="$log_path"
-    export ACTION="$action"
-    
-    # Verificar dependencias
-    check_dependencies
-    
-    # Validar parámetros
-    validate_params
-    
-    case "$action" in
-        "kill")
-            stop_daemon
-            ;;
-        "start")
-            if [[ -z "$config_path" || -z "$log_path" ]]; then
-                log_error "Los parámetros -configuracion y -log son obligatorios para iniciar el demonio"
-                show_help
-                exit 1
-            fi
-            
-            if is_daemon_running; then
-                log_error "Ya existe un demonio activo para el repositorio '$repo_path'"
-                log_error "Use --kill para detenerlo primero"
-                exit 1
-            fi
-            
-            # Ejecutar demonio en segundo plano
-            if [[ "${DAEMON_MODE:-0}" -eq 1 ]]; then
-                # Modo demonio directo
-                start_daemon
-            else
-                # Lanzar en background
-                log_info "Iniciando Git Security Monitor en segundo plano para repositorio."
-                
-                DAEMON_MODE=1 nohup "$0" -repo "$repo_path" -configuracion "$config_path" -log "$log_path" ${VERBOSE:+-verbose} >/dev/null 2>&1 &
-                local daemon_pid=$!
-                
-                # Verificar que se inició correctamente
-                sleep 2
-                if kill -0 "$daemon_pid" 2>/dev/null; then
-                    log_info "Git Security Monitor iniciado con PID: $daemon_pid"
-                    log_info "Use -kill para detener el demonio"
-                else
-                    log_error "Error al iniciar el demonio"
-                    exit 1
-                fi
-            fi
-            ;;
-    esac
-}
+# Derivados
+repo_hash="$(hash_repo_path "$REPO")"
+[[ -z "${LOGFILE:-}" ]] && LOGFILE="$REPO/.git/audit.log"
+LOG_LOCKFILE="/tmp/audit-${repo_hash}.lock"
+: > "$LOG_LOCKFILE"
 
-# Ejecutar función principal solo si el script se ejecuta directamente
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
+# --- Kill mode (solo -r + -k) ---
+if (( KILL_MODE )); then
+  if [[ -n "${CONFIG:-}" || ( -n "${LOGFILE:-}" && "$LOGFILE" != "$REPO/.git/audit.log" ) ]]; then
+    log_error "Con -k/--kill solo se permite -r/--repo. No use -c/--configuracion ni -l/--log."
+    exit 1
+  fi
+  mapfile -t pids < <(find_daemon_pids_by_repo)
+  if ((${#pids[@]} == 0)); then
+    log_warn "No hay daemon corriendo para este repo."
+  else
+    log_info "Deteniendo por cmdline: ${pids[*]}"
+    for p in "${pids[@]}"; do kill -TERM "$p" 2>/dev/null || true; done
+    sleep 1
+    for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null || true; done
+  fi
+  rm -f "$LOG_LOCKFILE" 2>/dev/null || true
+  exit 0
+fi
+
+check_dependencies
+[[ -n "${CONFIG:-}" ]] || { log_error "Debe indicar -c/--configuracion <archivo>"; exit 1; }
+[[ -f "$CONFIG" ]] || { log_error "Archivo de configuración no existe: $CONFIG"; exit 1; }
+load_patterns "$CONFIG"
+
+# SOLO el PADRE chequea duplicados (antes de daemonizar)
+if [[ "${DAEMON_MODE:-0}" != "1" ]]; then
+  mapfile -t running < <(find_daemon_pids_by_repo)
+  if ((${#running[@]} > 0)); then
+    log_error "Ya hay un daemon para este repo (PIDs: ${running[*]})."; exit 1
+  fi
+  # Daemonizar
+  nohup env DAEMON_MODE=1 "$0" -r "$REPO" -c "$CONFIG" -l "$LOGFILE" >/dev/null 2>&1 &
+  log_info "Daemon iniciado en segundo plano."
+  exit 0
+else
+  # El HIJO NO se auto-bloquea: entra directo al loop
+  daemon_loop
 fi
