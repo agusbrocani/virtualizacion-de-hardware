@@ -1,0 +1,6 @@
+Sep 14 15:01:01 server.local app[1111]: Request failed with error code 500
+Sep 14 15:01:05 server.local app[1112]: Connection error while fetching data
+Sep 14 15:01:10 server.local app[1113]: Request completed successfully
+Sep 14 15:01:15 server.local app[1114]: HTTP/1.1 500 Internal Server Error
+Sep 14 15:01:20 server.local app[111500]: Another error occurred in module X
+[perror]
