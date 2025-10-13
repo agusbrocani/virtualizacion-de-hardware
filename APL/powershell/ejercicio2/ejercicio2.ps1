@@ -25,10 +25,10 @@
     hubs o caminos óptimos, con modo de depuración opcional.
 
 .PARAMETER Mapa
-    Ruta al archivo de texto que contiene la matriz de costos. Por defecto, "mapa.txt".
+    Ruta al archivo de texto que contiene la matriz de costos.
 
 .PARAMETER Sep
-    Carácter separador usado en el archivo de matriz. Por defecto, "|".
+    Carácter separador usado en el archivo de matriz.
 
 .PARAMETER Hub
     Indica si se debe calcular el análisis de hubs (nodos centrales).
@@ -41,11 +41,11 @@
 
 .EXAMPLE
     .\ejercicio2_informe.ps1 -Mapa "mapa.txt" -Sep "," -Camino
-    Genera un informe con el camino óptimo usando el archivo "red.txt" y el separador ",".
-
+    Genera un informe con el camino óptimo usando el archivo "mapa.txt" y el separador ",".
+	
 .EXAMPLE
-    .\ejercicio2_informe.ps1 -Hub -DebugMode
-    Calcula el análisis de hubs con depuración activada, usando el archivo por defecto "mapa.txt".
+    .\ejercicio2_informe.ps1 -Mapa "mapa.txt" -Sep "," -Hub
+    Genera un informe con los hubs obtenidos de la red usando el archivo "mapa.txt" y el separador ",".
 
 .NOTES
     El archivo de entrada debe contener una matriz cuadrada de valores numéricos,
@@ -173,6 +173,49 @@ $script:MejoresRutasGlobal = @()
 $script:MejorCostoGlobal = 1e12
 $script:MejoresRutasGlobal = @()
 
+# --- función para calcular hubs ---
+function CalcularHub {
+    $NO_CONN = 1e12              
+    $maxCon = -1
+    $hubs = @()
+    $conexiones = @()
+
+    for ($i = 0; $i -lt $N; $i++) {
+        $con = 0
+        for ($j = 0; $j -lt $N; $j++) {
+            if ($i -ne $j) {
+                $peso = [double]$matriz[$i*$N + $j]
+                # solo cuenta si hay conexión real (no infinita)
+                if ($peso -lt $NO_CONN) { 
+                    $con++ 
+                }
+            }
+        }
+        $conexiones += $con
+
+        if ($con -gt $maxCon) {
+            $maxCon = $con
+            $hubs = @($i+1)     # guardamos en base 1
+        } elseif ($con -eq $maxCon) {
+            $hubs += ($i+1)
+        }
+    }
+
+    if ($maxCon -le 0) {
+        return "**Hub de la red:** no se detectaron conexiones válidas.`n"
+    }
+
+    $output = "**Hub de la red:** estaciones $($hubs -join ', ') ($maxCon conexiones)`n"
+	
+	if ($DebugMode) {
+		$output += "Todas las estaciones (conexiones):`n"
+		for ($i = 0; $i -lt $N; $i++) {
+			$output += "  Estación $($i+1): $($conexiones[$i])`n"
+		}
+	}
+    return $output
+}
+
 # --- función para calcular caminos ---
 function CalcularCamino {
 
@@ -288,7 +331,7 @@ if ($Camino) {
         foreach ($ruta in $script:MejoresRutasGlobal) {
             # ajustar a base 1 si tu matriz es base 0
             $rutaBase1 = $ruta | ForEach-Object { $_ + 1 }
-            $contenido += "Ruta: $($rutaBase1 -join ' ')`n"
+            $contenido += "Ruta: $($rutaBase1 -join '->')`n"
         }
     }
 }

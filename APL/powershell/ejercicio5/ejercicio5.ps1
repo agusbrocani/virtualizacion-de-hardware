@@ -152,7 +152,21 @@ function Format-CountryName {
 }
 
 $fileCacheName = "restcountries-cache.json"
-$cachePath = Join-Path -Path $env:LOCALAPPDATA -ChildPath $fileCacheName
+
+if ($IsWindows) {
+    $baseCachePath = $env:LOCALAPPDATA
+}
+else {
+    $baseCachePath = "$HOME/.cache"
+}
+
+# Si no existe el directorio base, lo crea
+if (-not (Test-Path $baseCachePath)) {
+    New-Item -ItemType Directory -Path $baseCachePath -Force | Out-Null
+}
+
+$cachePath = Join-Path -Path $baseCachePath -ChildPath $fileCacheName
+
 try {
     # Si no existe el archivo de caché, lo crea
     if (-not (Test-Path $cachePath)) {
