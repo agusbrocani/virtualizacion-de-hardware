@@ -91,8 +91,8 @@ if [[ "$pantalla" != "true" ]]; then
 fi
 
 # Procesar archivos
-archivos=$(find "$directorio" -maxdepth 1 -type f -name "*.txt")
-if [[ -z "$archivos" ]]; then
+mapfile -t archivos < <(find "$directorio" -maxdepth 1 -type f -name "*.txt")
+if [[ ${#archivos[@]} -eq 0 ]]; then
   echo "Error: no se encontraron archivos .txt en '$directorio'." >&2
   exit 1
 fi
@@ -101,7 +101,7 @@ tmpfile=$(mktemp)
 trap "rm -f $tmpfile" EXIT
 
 # Leer todos los archivos y filtrar líneas válidas
-for f in $archivos; do
+for f in "${archivos[@]}"; do
   awk -F"|" '
   NF==5 && $3!="" {
     fecha=$2
