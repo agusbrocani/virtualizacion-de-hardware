@@ -318,7 +318,7 @@ function Try-CreateWatcher {
 }
 
 function Log-Line{ param([string]$line) Add-Content -LiteralPath $Log -Value $line -Encoding UTF8 }
-function Log-Alert{ param([string]$pattern,[string]$file,[int]$line,[string]$tipo) Log-Line ("[{0}] Alerta: patrón '{1}' encontrado en el archivo '{2}' (línea {3}) [Tipo: {4}]" -f (ts), $pattern, $file, $line, $tipo) }
+function Log-Alert{ param([string]$pattern,[string]$file,[int]$line,[string]$tipo) Log-Line ("[{0}] Alerta: patrón '{1}' encontrado en el archivo '{2}' [Tipo: {4}]" -f (ts), $pattern, $file, $line, $tipo) }
 
 function Scan-File-Patterns{
   param([string]$relPath,[hashtable]$PATTERNS)
