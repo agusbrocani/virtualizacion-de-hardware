@@ -30,7 +30,6 @@ pruebas_*/
 *.o
 *.bin
 *~
-!*.zip
 !*.tar
 PROJECT_STANDARDS.md
 instructions.md
